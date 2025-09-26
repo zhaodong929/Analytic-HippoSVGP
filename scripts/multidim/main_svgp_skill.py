@@ -217,7 +217,7 @@ if __name__ == "__main__":
         pbar = range(num_epochs)
         for epoch in pbar:
             optimizer.zero_grad()
-            loss, ve_mean, kl = model.ELBO(x, y, beta=1) 
+            loss, ve_mean, kl = model.ELBO(x, y) 
             loss = -loss
             loss.backward()
             optimizer.step()
