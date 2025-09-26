@@ -53,7 +53,7 @@ python -m scripts.gpvae.test_osvgpvae_ovc_era5
 python -m scripts.gpvae.test_ohsvgpvae_era5 # run osvgpvae_era5 first before hippo because some hyperparameters for task 1 are initiated the same
 ```
 
-## Citing the paper (bib)
+# Citing the paper (bib)
 ```
 @inproceedings{chen2025recurrent,
   title = {Recurrent Memory for Online Interdomain Gaussian Processes},
@@ -63,7 +63,7 @@ python -m scripts.gpvae.test_ohsvgpvae_era5 # run osvgpvae_era5 first before hip
 }
 ```
 
-## Third-party code and licenses
+# Third-party code and licenses
 
 This project includes code adapted from the HiPPO project by HazyResearch.
 
