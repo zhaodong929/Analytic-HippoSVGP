@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt  
-from cripts.onedim.solar.baseline import FullGP
+from scripts.onedim.solar.baseline import FullGP
 from hipposvgp.sgpr import HIPPO_SVGP, HIPPO_OSGPR_VFE
 from hipposvgp.hippo import HiPPO_LegS
 import torch.nn as nn

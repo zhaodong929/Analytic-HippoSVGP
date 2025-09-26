@@ -16,6 +16,14 @@ python -m pip install -e /path/to/HIPPOSVGP
 
 1D Solar
 
+```
+python -m scripts.onedim.solar.train_full_first2 # run this frist
+python -m scripts.onedim.solar.test_vff_online
+python -m scripts.onedim.solar.train_svgp_online
+python -m scripts.onedim.solar.train_svgp_online_pivini
+python -m scripts.onedim.solar.test_hsgp_online_fixedkernel
+```
+
 1D COVID 
 ```
 python -m scripts.onedim.covid.test_osvgp_piv
@@ -24,6 +32,17 @@ python -m scripts.onedim.covid.test_ohsgp
 ```
 
 UCI
+
+```
+python -m scripts.multidim.gp_ini
+python -m scripts.multidim.main_hsgp_online_toy
+python -m scripts.multidim.main_hsgp_powerplant
+python -m scripts.multidim.main_hsgp_skill
+python -m scripts.multidim.main_svgp_online_toy
+python -m scripts.multidim.main_svgp_powerplant_piv
+python -m scripts.multidim.main_svgp_powerplant
+python -m scripts.multidim.main_svgp_skill
+```
 
 GPVAE
 ```

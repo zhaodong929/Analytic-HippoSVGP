@@ -3,8 +3,8 @@ import numpy.random as npr
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from kernel import SE_kernel, SMK_kernel
-from hippo import HiPPO_LegS
+from hipposvgp.kernel import SE_kernel, SMK_kernel
+from hipposvgp.hippo import HiPPO_LegS
 import math
 from scipy import special as ss
 
