@@ -31,3 +31,13 @@ python -m scripts.gpvae.test_osvgpvae_era5
 python -m scripts.gpvae.test_osvgpvae_ovc_era5
 python -m scripts.gpvae.test_ohsvgpvae_era5 # run osvgpvae_era5 first before hippo because some hyperparameters for task 1 are initiated the same
 ```
+
+## Third-party code and licenses
+
+This project includes code adapted from the HiPPO project by HazyResearch.
+
+- Source: [HazyResearch/hippo-code `model/hippo.py` and `model/op.py`](https://github.com/HazyResearch/hippo-code)
+- Adapted into: `hipposvgp/hippo.py`
+- License: Apache-2.0 (see upstream [LICENSE](https://github.com/HazyResearch/hippo-code/blob/master/LICENSE))
+
+For full third-party license text and details, see `THIRD_PARTY_NOTICES.md` in this repository.
