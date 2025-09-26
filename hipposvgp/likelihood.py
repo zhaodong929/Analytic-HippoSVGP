@@ -4,6 +4,30 @@ import torch.nn as nn
 from torch.distributions import NegativeBinomial as NegativeBinomial_
 import numpy as np
 
+class Bernoulli(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def link_fn(self, mean):
+        # Define your link function here
+        return torch.sigmoid(mean)
+
+    def log_prob(self, pred, y):
+        jitter = 1e-9
+        # Compute mu using the link function
+        mu = self.link_fn(pred)
+        # Compute the negative binomial log-likelihood
+        likelihood = y* torch.log(mu + jitter) + (1 - y)* torch.log(1 - mu + jitter)
+        return likelihood
+
+    def forward(self, f, y):
+        y = y.double()
+        f = f.double()
+        pred = self.link_fn(f)
+        # Return the negative binomial likelihood
+        loglik = self.log_prob(pred, y)
+        return loglik.float()
+
 class GaussianLikelihood(torch.nn.Module):
     """
     Gaussian likelihood for SVGP with diagonal noise.
