@@ -25,8 +25,23 @@ if __name__ == "__main__":
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         if args.data == 'solar':
-            data_train = np.load('data/solar_data_train.npy')
-            data_test = np.load('data/solar_data_test.npy')
+            data_train = np.load('./solar_data_train.npy')
+            data_test = np.load('./solar_data_test.npy')
+            data = np.vstack([data_train, data_test])
+            ind = np.argsort(data[:,0])
+            data = data[ind]
+            ind_test = np.random.choice(np.arange(data.shape[0]), size=91)
+            ind_train = []
+            for i in range(data.shape[0]):
+                if i in ind_test:
+                    continue
+                else:
+                    ind_train.append(i)
+            data_test = data[ind_test]
+            data_train = data[ind_train]
+
+            ind = np.argsort(data_train[:,0])
+            data_train = data_train[ind]
             x_test = torch.tensor(np.arange(-200., 200., 2.).reshape((-1,1))).to(device)
         else:
             data = np.load('./baseband.npy') # [352672, 1]
@@ -46,9 +61,11 @@ if __name__ == "__main__":
         y_list = []
         split_size = x.shape[0] // 10
         split_size_t = x_t.shape[0] // 10
-        for i in range(10):
+        for i in range(9):
             x_list.append(x[i*split_size:(i+1)*split_size])
             y_list.append(y[i*split_size:(i+1)*split_size])
+        x_list.append(x[9*split_size:])
+        y_list.append(y[9*split_size:])
         
         fullGP = FullGP(X=x, y=y, device=device, kernel_type='matern52').to(device)
         fullGP.load_state_dict(torch.load(args.model_full_dir+'/steps_nll'+str(args.num_iters)))
@@ -141,3 +158,4 @@ if __name__ == "__main__":
         print('OSGP10, log-noise: {}'.format(cur_model.log_noise.item()))
         print('OSGP10, log-ls: {}'.format(cur_model.vff.log_ls.item()))
         print('OSGP10, log-sf: {}'.format(cur_model.vff.log_sf.item()))
+
