@@ -75,6 +75,8 @@ class HIPPOOSVGP(nn.Module):
         # initialize the variational parameters
         # initialise a as zeros and L as an identity matrix
         self.inducing_size = inducing_size
+
+        # q(v)=N(mv​,Lv​LvT​)
         # Initialize mv and Lv on CPU first
         mv = torch.zeros(self.inducing_size).double()
         Lv = torch.eye(self.inducing_size).double()
@@ -94,7 +96,7 @@ class HIPPOOSVGP(nn.Module):
         # HIPPO parameters
         self.end = end
         self.start = start
-        self.maxT = end - start
+        self.maxT = end - start   # Total time span
         self.num_discrete_steps = (
             num_discrete_steps  # Step size = maxT / num_discrete_steps
         )
@@ -106,11 +108,12 @@ class HIPPOOSVGP(nn.Module):
         # Stability
         self.jitter = 1e-6
 
+    # Add a small diagonal term to matrix Kuu to ensure invertibility: Kuu​←Kuu​+ϵkˉI
     def add_jitter(self, Kuu):
         return Kuu + self.jitter * torch.mean(torch.diag(Kuu)).detach() * torch.eye(
             Kuu.shape[0], device=self.device
         )
-
+    # Generate time discrete point sequence: ti​=start+i⋅Δt
     def get_time_stamps(self):
         time_stamps = self.start + (self.maxT / self.num_discrete_steps) * (
             1
@@ -135,7 +138,7 @@ class HIPPOOSVGP(nn.Module):
             Z = res[-1]
             Z_old_newk = res[self.prev_discrete_steps-1] 
         return Z, Z_old_newk
-
+    # ϕ(x)=sqrt(1/M)​[sin(wx),cos(wx)]
     def get_Z(self, w):
         """Get the RFF features term Z"""
         time_stamps = self.get_time_stamps()
@@ -146,7 +149,7 @@ class HIPPOOSVGP(nn.Module):
         )
         Z, Z_old_newk = self.apply_hippo(h)
         return Z, Z_old_newk, time_stamps
-
+    # Kuu ​= Z.T @ Z
     def Kuu_se(self, w):
         Z, Z_old_newk, _ = self.get_Z(w)
         Kuu = Z.T @ Z
@@ -162,7 +165,7 @@ class HIPPOOSVGP(nn.Module):
                 Kuuold = Z.T @ self.Z_old
                 Kuolduold = self.Kaa_old
         return Z, Z_old_newk, Kuu, Kuuold, Kuolduold
-
+    # fu​=Φ(X)Z, Kff​=Φ(X)Φ(X)T
     def KfuKff_rff_se(self, w, X):
         Z, _, _ = self.get_Z(w)
         rff_sample_size = w.shape[1]
@@ -201,7 +204,7 @@ class HIPPOOSVGP(nn.Module):
     def quold_new(self, Kuu, Kuu_old, Ku_old_old_newk, full_cov=True):
          Kff_new = Ku_old_old_newk
          Kfu_new = Kuu_old.T
- 
+       
          Luu = torch.linalg.cholesky(self.add_jitter(Kuu))# + 1e-6 * torch.eye(Kuu.shape[0], device=Kuu.device))
          # 2) get Kuu^{-1}-related terms
          #    Luu is cholesky(Kuu)
@@ -212,14 +215,15 @@ class HIPPOOSVGP(nn.Module):
  
          L_u  = Luu @ self.Lv           # factor for Cov[u] = L_u L_u^T
  
-         # 4) predictive mean
+         # 4) predictive mean   μf​=Kfu​Kuu−1​mv​
          alpha = torch.cholesky_solve(mu_u, Luu)  # => Kuu^-1 mu_u
          mean  = Kfu_new @ alpha                  # => [N, 1]
  
-         # 5) predictive var
+         # 5) predictive var  Qff​=Kfu​Kuu−1​Kfu⊤​  Σf​=Kff​−Qff​
          Kuu_inv_Kfu = torch.cholesky_solve(Kfu_new.T, Luu)
          var = Kff_new - Kfu_new @ Kuu_inv_Kfu  # "prior conditional" part
- 
+
+        # Add variational covariance correction term  Σf​=Kff​−Qff​+ (Kfu​Kuu−1​Lv​Lv⊤​Kuu−1​Kfu⊤)​
          if full_cov:
              temp = torch.cholesky_solve(L_u, Luu)  # => Kuu^-1 L_u
              Z    = Kfu_new @ temp                 # => [N, r]
@@ -231,7 +235,7 @@ class HIPPOOSVGP(nn.Module):
              var += var_diag_extra
              var = var.unsqueeze(1)  # [N, 1]
          return mean, var
-
+    # Historical corrections  qnew​(u)≈∫p(u∣uold​)qold​(uold​)duold​
     def correction_term(self, Kuu, Kuu_old, Ku_old_old, Ku_old_old_newk):
         """
         if Kuu is None or Kuu_old is None or Ku_old_old is None:
@@ -325,7 +329,7 @@ class HIPPOOSVGP(nn.Module):
             if self.kuolduold_newk != None:
                 kuolduold_newk = self.kuolduold_newk
 
-        # 3. Cholesky of Kuu
+        # 3. Cholesky of Kuu  Kuu−1​mv​
         #jitter  = 1e-6
         L_Kuu   = torch.linalg.cholesky(self.add_jitter(Kuu))# + jitter*torch.eye(Kuu.shape[0], device=Kuu.device))
 
@@ -344,7 +348,7 @@ class HIPPOOSVGP(nn.Module):
         else:
             log_det_Sv = torch.logdet(Sv)
         M   = Kuu.shape[0]
-        kl  = 0.5*(trace_term + quadratic_term - M - log_det_Sv)
+        kl  = 0.5*(trace_term + quadratic_term - M - log_det_Sv) #KL(q(v)∥p(v))=21​[log∣Sv​∣−log∣Kuu​∣−m+tr(Kuu−1​Sv​)+mvT​Kuu−1​mv​]
 
         # --> This is correct for KL[q(v) || p(v)=N(0,I)].
 
@@ -385,7 +389,7 @@ class HIPPOOSVGP(nn.Module):
         eps     = torch.randn_like(mean_f)
         f_samples = mean_f + L_Cov_f @ eps
 
-        # 9. Evaluate variational expectations
+        # 9. Evaluate variational expectations  Eq​[logp(y∣f)]=−21​log(2πσ2)−2σ21​Eq​[(y−f)2]
         variational_expectations = self.likelihood.log_prob(f_samples, y)
         ve_sum  = torch.sum(variational_expectations, dim=-1)
         ve_mean = torch.sum(ve_sum)

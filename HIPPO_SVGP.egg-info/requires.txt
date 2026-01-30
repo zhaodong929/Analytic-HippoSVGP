@@ -1,0 +1,13 @@
+pytest
+tqdm
+numpy
+pandas
+torchvision
+torch
+ipywidgets
+jupyter
+matplotlib
+scipy
+scikit-learn
+cdsapi>=0.7.4
+xarray

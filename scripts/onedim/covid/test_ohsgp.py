@@ -16,6 +16,27 @@ import os
 import argparse
 import math
 
+def _predict_mean(model, f_mean):
+    if hasattr(model.likelihood, "link_fn"):
+        return model.likelihood.link_fn(f_mean)
+    return f_mean
+
+def _rmse_r2(y_true, y_pred):
+    y_true = y_true.squeeze()
+    y_pred = y_pred.squeeze()
+    mse = torch.mean((y_pred - y_true) ** 2)
+    rmse = torch.sqrt(mse)
+    var = torch.mean((y_true - y_true.mean()) ** 2)
+    r2 = 1 - mse / var if var.item() > 0 else torch.tensor(float("nan"), device=y_true.device)
+    return rmse.item(), r2.item()
+
+def _append_metrics_row(path, header, row):
+    write_header = not os.path.exists(path)
+    with open(path, "a+") as f:
+        if write_header:
+            f.write(header + "\n")
+        f.write(row + "\n")
+
 def setup():
     parser=argparse.ArgumentParser('Argument Parser')
     parser.add_argument('--seed_num',type=int,default=0)
@@ -114,10 +135,15 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     w = model.kernel.sample_from_spectral(rff_sample_size).unsqueeze(0)
     w = w.detach()
     mean, var = model.pred_f(days_test, w)
+    pred_mean = _predict_mean(model, mean)
+    rmse, r2 = _rmse_r2(deaths_test, pred_mean)
     f_samples = mean + torch.sqrt(var) * torch.randn(1000, var.shape[0], var.shape[1]).to(device)  # [1000, Ntest, 1]
 
     nlpd = -torch.log(model.likelihood.log_prob(f_samples.view(-1,1), deaths_test.unsqueeze(0).tile(1000, 1, 1).view(-1,1)).view(1000,-1).exp().mean(dim=(0))).mean()
     log.append('test nlpd after task1: {}\n'.format(nlpd))
+    log.append('test rmse after task1: {}\n'.format(rmse))
+    log.append('test r2 after task1: {}\n'.format(r2))
+    print(f"[task1] test rmse: {rmse}, r2: {r2}, nlpd: {nlpd}")
     
     f_samples = mean + torch.sqrt(var) * torch.randn(30, var.shape[0], var.shape[1]).to(device)  # [10, Ntest, 1]
     y_samples = model.likelihood.sample(f_samples.squeeze(-1), numy_perf=30).to(device)
@@ -130,7 +156,14 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
         deaths_pred_lower = torch.quantile(y_samples, 0.5-conf/2, dim=1)
         deaths_pred_upper = torch.quantile(y_samples, 0.5+conf/2, dim=1)
         ece_list.append(torch.abs(torch.mean((((((deaths_pred_lower - deaths_test.squeeze(1)) < 0)+0.) + (((deaths_pred_upper - deaths_test.squeeze(1)) > 0)+0.)) > 1)+0.) - conf).item())
-    log.append('test ece after task1: {}\n'.format(np.mean(np.array(ece_list))))
+    ece = np.mean(np.array(ece_list))
+    log.append('test ece after task1: {}\n'.format(ece))
+    metrics_path = './ohsgp/models'+str(args.seed_num)+'/metrics.csv'
+    _append_metrics_row(
+        metrics_path,
+        "eval_task,after_task,rmse,r2,nlpd,ece",
+        f"1,1,{rmse},{r2},{nlpd},{ece}",
+    )
     with open('./ohsgp/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
     #with open('./training.log', "a+") as log_file:
         log_file.writelines(log)
@@ -272,13 +305,19 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
     days_test_list.append(days_test)
     #deaths_test = torch.concatenate([prev_deaths_test, deaths_test])
     deaths_test_list.append(deaths_test)
+    metrics_path = './ohsgp/models'+str(args.seed_num)+'/metrics.csv'
     count = 0
     for days_test in days_test_list:
         mean, var = model.pred_f(days_test, w)
+        pred_mean = _predict_mean(model, mean)
+        rmse, r2 = _rmse_r2(deaths_test_list[count], pred_mean)
         f_samples = mean + torch.sqrt(var) * torch.randn(1000, var.shape[0], var.shape[1]).to(device)  # [1000, Ntest, 1]
 
         nlpd = -torch.log(model.likelihood.log_prob(f_samples.view(-1,1), deaths_test_list[count].unsqueeze(0).tile(1000, 1, 1).view(-1,1)).view(1000,-1).exp().mean(dim=(0))).mean()
         log.append('task id: {}, test nlpd after task{}: {}\n'.format(count+1, task_id, nlpd))
+        log.append('task id: {}, test rmse after task{}: {}\n'.format(count+1, task_id, rmse))
+        log.append('task id: {}, test r2 after task{}: {}\n'.format(count+1, task_id, r2))
+        print(f"[task{task_id} eval{count+1}] test rmse: {rmse}, r2: {r2}, nlpd: {nlpd}")
         
         f_samples = mean + torch.sqrt(var) * torch.randn(30, var.shape[0], var.shape[1]).to(device)  # [10, Ntest, 1]
         y_samples = model.likelihood.sample(f_samples.squeeze(-1), numy_perf=30).to(device)
@@ -291,7 +330,13 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
             deaths_pred_lower = torch.quantile(y_samples, 0.5-conf/2, dim=1)
             deaths_pred_upper = torch.quantile(y_samples, 0.5+conf/2, dim=1)
             ece_list.append(torch.abs(torch.mean((((((deaths_pred_lower - deaths_test_list[count].squeeze(1)) < 0)+0.) + (((deaths_pred_upper - deaths_test_list[count].squeeze(1)) > 0)+0.)) > 1)+0.) - conf).item())
-        log.append('task id: {}, test ece after task{}: {}\n'.format(count+1, task_id, np.mean(np.array(ece_list))))
+        ece = np.mean(np.array(ece_list))
+        log.append('task id: {}, test ece after task{}: {}\n'.format(count+1, task_id, ece))
+        _append_metrics_row(
+            metrics_path,
+            "eval_task,after_task,rmse,r2,nlpd,ece",
+            f"{count+1},{task_id},{rmse},{r2},{nlpd},{ece}",
+        )
         with open('./ohsgp/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
         #with open('./training.log', "a+") as log_file:
             log_file.writelines(log)
@@ -343,6 +388,9 @@ if __name__ == '__main__':
     args = setup()
     seed_everything(args.seed_num)
     os.makedirs('./ohsgp/models'+str(args.seed_num), exist_ok=True)
+    metrics_path = './ohsgp/models'+str(args.seed_num)+'/metrics.csv'
+    with open(metrics_path, "w") as f:
+        f.write("eval_task,after_task,rmse,r2,nlpd,ece\n")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     inducing_size = 15
     num_epochs = 5000

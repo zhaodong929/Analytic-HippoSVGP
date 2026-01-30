@@ -1,0 +1,13 @@
+Running COVID-19 Task 1 Convergence Check on cuda...
+Data Loaded & Shifted: Start=0.00, End=136.00, Duration=136.00
+Using REAL trained parameters: log_ls=3.1289 (Lengthscale ≈ 22.85 days)
+Step Size  | Num Steps  | Rel Error            | Max Diff       
+-----------------------------------------------------------------
+2.0000     | 68         | 0.092890             | 0.001628       
+1.0000     | 136        | 0.053565             | 0.000917       
+0.5000     | 272        | 0.027896             | 0.000480       
+0.1000     | 1360       | 0.005661             | 0.000099       
+0.0500     | 2720       | 0.002832             | 0.000050       
+0.0100     | 13600      | 0.000567             | 0.000010       
+
+Results saved to convergence_covid_results.txt
