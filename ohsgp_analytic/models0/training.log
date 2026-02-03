@@ -1176,3 +1176,670 @@ task id: 5, test nlpd after task5: 4.609513486234423
 task id: 5, test rmse after task5: 18.348926696486615
 task id: 5, test r2 after task5: 0.36324707155926383
 task id: 5, test ece after task5: 0.2750000022351742
+log_ls: 0.0, log_sf: -6.29670724314555, nu: 3.2185118198394775
+test nlpd after task1: 7.295331883426981
+test rmse after task1: 37.676442607572966
+test r2 after task1: -1.2883140245112092
+test ece after task1: 0.44629629477858546
+log_ls: 0.0, log_sf: 3.312675517828527, nu: 0.4745475947856903
+test nlpd after task1: 3.272813185140035
+test rmse after task1: 9.312811444636525
+test r2 after task1: 0.8601902491355035
+test ece after task1: 0.08703703656792641
+log_ls: 3.128578646276844, log_sf: 5.158547960059437, nu: -1.3731348514556885
+test nlpd after task1: 2.909103288961245
+test rmse after task1: 7.201945891587751
+test r2 after task1: 0.916386664178466
+test ece after task1: 0.1307407386600971
+epoch0 elbo 29256.668390492767 ve_mean -1440.3358235340077 kl 27.60486814914788
+epoch999 elbo 27290.995839187275 ve_mean -183.6199336878691 kl 65.8354339989219
+epoch1999 elbo 27289.58877244729 ve_mean -181.45399058356224 kl 67.23513446680285
+epoch2999 elbo 27291.266733046505 ve_mean -183.24335650315135 kl 67.1378581889359
+epoch3999 elbo 27293.12823164114 ve_mean -185.24559055035664 kl 66.97948572777179
+epoch4999 elbo 27292.314210799883 ve_mean -183.78327910474928 kl 67.58417475247825
+task id: 1, test nlpd after task2: 2.9199605924992382
+task id: 1, test rmse after task2: 7.379441190235741
+task id: 1, test r2 after task2: 0.9122144986041638
+task id: 1, test ece after task2: 0.11000000461935996
+task id: 2, test nlpd after task2: 3.812676509139122
+task id: 2, test rmse after task2: 10.807589785862882
+task id: 2, test r2 after task2: 0.13797788207020156
+task id: 2, test ece after task2: 0.08833333179354667
+epoch0 elbo 30443.538600114716 ve_mean -262.5713096384301 kl 67.49221760714227
+epoch999 elbo 29079.44489352682 ve_mean -197.0232283822044 kl 87.24896106119289
+epoch1999 elbo 29080.278495206443 ve_mean -199.47898861097326 kl 87.10876041738936
+epoch2999 elbo 29080.67967931955 ve_mean -199.5718072290056 kl 87.50897833765161
+epoch3999 elbo 29082.60078105297 ve_mean -201.62952071938477 kl 87.33041404699088
+epoch4999 elbo 29081.48180520741 ve_mean -200.12430995025943 kl 87.71175982071867
+task id: 1, test nlpd after task3: 2.9193060276139553
+task id: 1, test rmse after task3: 7.408813217987362
+task id: 1, test r2 after task3: 0.9115142912220354
+task id: 1, test ece after task3: 0.12481482103466987
+task id: 2, test nlpd after task3: 3.721919633420191
+task id: 2, test rmse after task3: 9.655055484572987
+task id: 2, test r2 after task3: 0.31202880878093786
+task id: 2, test ece after task3: 0.06666666865348816
+task id: 3, test nlpd after task3: 3.862459922255
+task id: 3, test rmse after task3: 11.333964225728627
+task id: 3, test r2 after task3: 0.6977589449848232
+task id: 3, test ece after task3: 0.12833333387970924
+epoch0 elbo 32144.46996010915 ve_mean -429.00918773432966 kl 87.62505092993757
+epoch999 elbo 30935.73573843114 ve_mean -198.61335730265407 kl 113.49121502492213
+epoch1999 elbo 30929.928354428852 ve_mean -192.73477882059134 kl 113.91465220773678
+epoch2999 elbo 30931.204330741522 ve_mean -194.2655198607136 kl 113.58127542693299
+epoch3999 elbo 30942.630830949547 ve_mean -205.56114288698214 kl 113.74466017954484
+epoch4999 elbo 30933.895410530276 ve_mean -196.0887677570213 kl 114.49482776258397
+task id: 1, test nlpd after task4: 2.911193936972683
+task id: 1, test rmse after task4: 7.379558667765221
+task id: 1, test r2 after task4: 0.9122117035670736
+task id: 1, test ece after task4: 0.12481481656432152
+task id: 2, test nlpd after task4: 3.7146381367915184
+task id: 2, test rmse after task4: 9.556717726364836
+task id: 2, test r2 after task4: 0.3259715593991447
+task id: 2, test ece after task4: 0.07500001639127732
+task id: 3, test nlpd after task4: 3.9838152579045016
+task id: 3, test rmse after task4: 12.258633232650524
+task id: 3, test r2 after task4: 0.6464312406662955
+task id: 3, test ece after task4: 0.13333332687616348
+task id: 4, test nlpd after task4: 3.7831859967409494
+task id: 4, test rmse after task4: 11.47509687193418
+task id: 4, test r2 after task4: 0.8032436091384401
+task id: 4, test ece after task4: 0.03666665554046631
+epoch0 elbo 33380.99087311392 ve_mean -451.83836294761045 kl 114.38885856750034
+epoch999 elbo 32327.206280451097 ve_mean -214.0381584201337 kl 131.5832172162662
+epoch1999 elbo 32343.54054853593 ve_mean -229.25424794609205 kl 133.1352237953115
+epoch2999 elbo 32334.44051945663 ve_mean -220.3565572194101 kl 133.00746172698095
+epoch3999 elbo 32323.6071011691 ve_mean -209.61439915042888 kl 132.93823829806792
+epoch4999 elbo 32334.44689484414 ve_mean -220.48636907375308 kl 132.85155161410634
+task id: 1, test nlpd after task5: 2.945992053393458
+task id: 1, test rmse after task5: 7.604929185828348
+task id: 1, test r2 after task5: 0.9067677445264779
+task id: 1, test ece after task5: 0.12037036940455437
+task id: 2, test nlpd after task5: 3.73811849630428
+task id: 2, test rmse after task5: 9.810413434598603
+task id: 2, test r2 after task5: 0.2897106143339281
+task id: 2, test ece after task5: 0.0833333469927311
+task id: 3, test nlpd after task5: 3.939522261408621
+task id: 3, test rmse after task5: 11.937560988546718
+task id: 3, test r2 after task5: 0.6647097008453958
+task id: 3, test ece after task5: 0.1366666689515114
+task id: 4, test nlpd after task5: 3.6093691339430674
+task id: 4, test rmse after task5: 9.063357860511115
+task id: 4, test r2 after task5: 0.877257664422833
+task id: 4, test ece after task5: 0.06500000581145286
+task id: 5, test nlpd after task5: 4.609513486234423
+task id: 5, test rmse after task5: 18.348926696486615
+task id: 5, test r2 after task5: 0.36324707155926383
+task id: 5, test ece after task5: 0.2750000022351742
+log_ls: 0.0, log_sf: 3.312675517828527, nu: 0.4745475947856903
+test nlpd after task1: 3.272813185140035
+test rmse after task1: 9.312811444636525
+test r2 after task1: 0.8601902491355035
+test ece after task1: 0.08703703656792641
+epoch0 elbo 36862.63817222839 ve_mean -2645.6693814199207 kl 14.703088065503561
+epoch999 elbo 32620.247157988793 ve_mean -202.0415654847156 kl 24.494380406971025
+epoch1999 elbo 30611.516688777036 ve_mean -195.3050386377759 kl 21.850043770407304
+epoch2999 elbo 27893.97446840974 ve_mean -197.94562601348787 kl 19.348905897055715
+epoch3999 elbo 24784.286342023785 ve_mean -196.18366451628958 kl 17.28899518477327
+epoch4999 elbo 21602.051064888048 ve_mean -195.64787264242932 kl 16.339246280215093
+task id: 1, test nlpd after task2: 23.35257083934287
+task id: 1, test rmse after task2: 77.39312871194211
+task id: 1, test r2 after task2: -8.655630763339998
+task id: 1, test ece after task2: 0.5351851843297482
+task id: 2, test nlpd after task2: 3.955687073367746
+task id: 2, test rmse after task2: 10.316012353947727
+task id: 2, test r2 after task2: 0.21461172777267823
+task id: 2, test ece after task2: 0.13500000387430192
+epoch0 elbo 35889.468108085515 ve_mean -2217.095106678612 kl 16.323398391745357
+epoch999 elbo 31398.633351012384 ve_mean -212.30348793522077 kl 20.299200010386077
+epoch1999 elbo 29279.435973476542 ve_mean -208.86522129635424 kl 18.289122071884105
+epoch2999 elbo 26564.70814268282 ve_mean -205.3460700982265 kl 19.17980362686483
+epoch3999 elbo 23436.04588426335 ve_mean -201.78206747977669 kl 18.649182911713556
+epoch4999 elbo 20991.320270562937 ve_mean -242.3297956619038 kl 37.042553130235724
+task id: 1, test nlpd after task3: 10.15783568663536
+task id: 1, test rmse after task3: 58.75502882973524
+task id: 1, test r2 after task3: -4.565009747245425
+task id: 1, test ece after task3: 0.46851851865649224
+task id: 2, test nlpd after task3: 4.557243371911132
+task id: 2, test rmse after task3: 22.040369475652792
+task id: 2, test r2 after task3: -2.5850766540464014
+task id: 2, test ece after task3: 0.11166666820645332
+task id: 3, test nlpd after task3: 4.960004840188024
+task id: 3, test rmse after task3: 25.353337359351823
+task id: 3, test r2 after task3: -0.512376958597178
+task id: 3, test ece after task3: 0.10833333060145378
+epoch0 elbo 30680.50492174226 ve_mean -1825.527175461619 kl 36.63286702667232
+epoch999 elbo 26834.427028329315 ve_mean -200.44497172625438 kl 67.13349435164704
+epoch1999 elbo 24330.9895047658 ve_mean -200.46639115269164 kl 43.72839024236361
+epoch2999 elbo 23013.8805637871 ve_mean -1583.979038620419 kl 70.85846530830801
+epoch3999 elbo 22157.993271008494 ve_mean -2096.409072532718 kl 90.11673000825267
+epoch4999 elbo 21577.402265033492 ve_mean -1960.059997612529 kl 170.91703849937747
+task id: 1, test nlpd after task4: 5.766627785786888
+task id: 1, test rmse after task4: 44.623602468897154
+task id: 1, test r2 after task4: -2.210000484570139
+task id: 1, test ece after task4: 0.29074074104428294
+task id: 2, test nlpd after task4: 12.021836583120377
+task id: 2, test rmse after task4: 94.05589723624404
+task id: 2, test r2 after task4: -64.28790999937195
+task id: 2, test ece after task4: 0.49166667088866234
+task id: 3, test nlpd after task4: 9.530638373093993
+task id: 3, test rmse after task4: 76.48166130783724
+task id: 3, test r2 after task4: -12.762724218789419
+task id: 3, test ece after task4: 0.4833333395421505
+task id: 4, test nlpd after task4: 6.089904083379878
+task id: 4, test rmse after task4: 59.705768281247636
+task id: 4, test r2 after task4: -4.326583124713672
+task id: 4, test ece after task4: 0.30833332762122156
+epoch0 elbo 30754.33608609975 ve_mean -1776.6604676553466 kl 171.0060222997153
+epoch999 elbo 29398.639372438494 ve_mean -1812.941396769766 kl 178.126085374788
+epoch1999 elbo 27962.763705048572 ve_mean -1201.2147162935196 kl 247.37864864253052
+epoch2999 elbo 26552.31977326518 ve_mean -353.8870880051299 kl 329.46878520775783
+epoch3999 elbo 28196.484676108736 ve_mean -2019.6186355615318 kl 327.3647536278326
+epoch4999 elbo 28005.426915080126 ve_mean -2297.853527804932 kl 323.49778622640923
+task id: 1, test nlpd after task5: 5.177959133015944
+task id: 1, test rmse after task5: 32.848048199047724
+task id: 1, test r2 after task5: -0.7393820362233496
+task id: 1, test ece after task5: 0.04407407119870186
+task id: 2, test nlpd after task5: 8.604298547756777
+task id: 2, test rmse after task5: 103.11371828850913
+task id: 2, test r2 after task5: -77.46818375853893
+task id: 2, test ece after task5: 0.4750000022351742
+task id: 3, test nlpd after task5: 5.987728456604747
+task id: 3, test rmse after task5: 66.67637569607548
+task id: 3, test r2 after task5: -9.460049784142043
+task id: 3, test ece after task5: 0.24166666194796563
+task id: 4, test nlpd after task5: 6.926570217042311
+task id: 4, test rmse after task5: 75.03720223770736
+task id: 4, test r2 after task5: -7.41335845463276
+task id: 4, test ece after task5: 0.3833333246409893
+task id: 5, test nlpd after task5: 7.736581631367954
+task id: 5, test rmse after task5: 103.5475617356195
+task id: 5, test r2 after task5: -19.278198659842893
+task id: 5, test ece after task5: 0.4750000022351742
+log_ls: 0.0, log_sf: 3.312675517828527, nu: 0.4745475947856903
+test nlpd after task1: 3.272813185140035
+test rmse after task1: 9.312811444636525
+test r2 after task1: 0.8601902491355035
+test ece after task1: 0.08703703656792641
+epoch0 elbo 23475.78374076282 ve_mean -583.6641833426721 kl 14.703088065503561
+epoch999 elbo 18742.332749808887 ve_mean -193.79938439577535 kl 15.946871502964285
+epoch1999 elbo 15850.339883540146 ve_mean -191.82719102004032 kl 16.355048909572094
+epoch2999 elbo 16125.379450110384 ve_mean -2487.2351961338745 kl 17.08591277820269
+epoch3999 elbo 14729.045899726892 ve_mean -2252.7700559477757 kl 25.96852492802828
+epoch4999 elbo 12156.744512302017 ve_mean -210.8163466291514 kl 34.98470880984174
+task id: 1, test nlpd after task2: 26.108468312476603
+task id: 1, test rmse after task2: 17.335161076386164
+task id: 1, test r2 after task2: 0.5155693593903855
+task id: 1, test ece after task2: 0.32777778133749963
+task id: 2, test nlpd after task2: 4.20940335504771
+task id: 2, test rmse after task2: 15.952048995955147
+task id: 2, test r2 after task2: -0.877991639626226
+task id: 2, test ece after task2: 0.11166667491197586
+epoch0 elbo 7162.083481036196 ve_mean -216.7583164174953 kl 34.99026003966806
+epoch999 elbo 5519.799121455818 ve_mean -197.45164966951765 kl 28.98501983513633
+epoch1999 elbo 4432.882492853836 ve_mean -196.5504420136573 kl 28.882574873758607
+epoch2999 elbo 3652.0929780607366 ve_mean -209.33106523620896 kl 34.08803857856461
+epoch3999 elbo 3002.84124169647 ve_mean -197.28399435885933 kl 34.201646330472606
+epoch4999 elbo 2576.611321760569 ve_mean -195.6490529049896 kl 34.38633373800904
+task id: 1, test nlpd after task3: 33.406404126896724
+task id: 1, test rmse after task3: 18.50493629864066
+task id: 1, test r2 after task3: 0.4479848071371808
+task id: 1, test ece after task3: 0.43148148432374
+task id: 2, test nlpd after task3: 5.4330486220223015
+task id: 2, test rmse after task3: 29.906503847692132
+task id: 2, test r2 after task3: -5.6007304235573745
+task id: 2, test ece after task3: 0.32499999925494194
+task id: 3, test nlpd after task3: 4.124624619477654
+task id: 3, test rmse after task3: 14.724082321054937
+task id: 3, test r2 after task3: 0.4899106509746718
+task id: 3, test ece after task3: 0.08333333358168601
+epoch0 elbo 3000.840091150261 ve_mean -346.71938952419396 kl 34.36427133536946
+epoch999 elbo 2343.482415085125 ve_mean -222.5811651167844 kl 36.302250172837574
+epoch1999 elbo 2107.5573681517317 ve_mean -192.19804860176248 kl 37.05788717330086
+epoch2999 elbo 1983.2447840902103 ve_mean -214.98077047226897 kl 37.32600028792615
+epoch3999 elbo 3689.3245741674305 ve_mean -1856.9259204743307 kl 32.33066678694421
+epoch4999 elbo 2854.304105609494 ve_mean -1102.425229125356 kl 57.00534716575833
+task id: 1, test nlpd after task4: 17.370366381087265
+task id: 1, test rmse after task4: 35.24214251594368
+task id: 1, test r2 after task4: -1.0021676876493575
+task id: 1, test ece after task4: 0.3981481544673443
+task id: 2, test nlpd after task4: 53.45308358378626
+task id: 2, test rmse after task4: 99.32249640263805
+task id: 2, test r2 after task4: -71.80412023359446
+task id: 2, test ece after task4: 0.533333333581686
+task id: 3, test nlpd after task4: 45.4735836955286
+task id: 3, test rmse after task4: 64.23155778567572
+task id: 3, test r2 after task4: -8.707037142668534
+task id: 3, test ece after task4: 0.4916666649281979
+task id: 4, test nlpd after task4: 18.662896885901024
+task id: 4, test rmse after task4: 64.46181994084934
+task id: 4, test r2 after task4: -5.208994169744563
+task id: 4, test ece after task4: 0.37499998658895495
+epoch0 elbo 3017.781243008458 ve_mean -659.8092624551414 kl 56.349289752036384
+epoch999 elbo 2386.7623225205743 ve_mean -880.3452432822182 kl 48.666909523469144
+epoch1999 elbo 1635.5748616866663 ve_mean -196.32480198855887 kl 45.78476292546755
+epoch2999 elbo 1591.7588264878948 ve_mean -191.613989564061 kl 44.59223705387969
+epoch3999 elbo 3055.585829046653 ve_mean -1403.6403036395034 kl 34.97029855162232
+epoch4999 elbo 2236.4079164121817 ve_mean -712.9732032161131 kl 81.44875391329818
+task id: 1, test nlpd after task5: 24.09631605597127
+task id: 1, test rmse after task5: 45.55302128366289
+task id: 1, test r2 after task5: -2.345108549214582
+task id: 1, test ece after task5: 0.5018518529832363
+task id: 2, test nlpd after task5: 41.72367336609088
+task id: 2, test rmse after task5: 86.91825342493352
+task id: 2, test r2 after task5: -54.754854453438874
+task id: 2, test ece after task5: 0.3499999947845936
+task id: 3, test nlpd after task5: 36.65042919440069
+task id: 3, test rmse after task5: 70.65664962718137
+task id: 3, test r2 after task5: -10.74615864682304
+task id: 3, test ece after task5: 0.366666654497385
+task id: 4, test nlpd after task5: 52.94231632469311
+task id: 4, test rmse after task5: 82.87000055323578
+task id: 4, test r2 after task5: -9.261499069261864
+task id: 4, test ece after task5: 0.47500000819563865
+task id: 5, test nlpd after task5: 9.098579409968677
+task id: 5, test rmse after task5: 62.07272990431044
+task id: 5, test r2 after task5: -6.2870426435432165
+task id: 5, test ece after task5: 0.3625000022351742
+log_ls: 3.128578646276844, log_sf: 5.158547960059437, nu: -1.3731348514556885
+test nlpd after task1: 2.909103288961245
+test rmse after task1: 7.201945891587751
+test r2 after task1: 0.916386664178466
+test ece after task1: 0.1307407386600971
+epoch0 elbo 29256.668390492767 ve_mean -1440.3358235340077 kl 27.60486814914788
+epoch999 elbo 27290.995839187275 ve_mean -183.6199336878691 kl 65.8354339989219
+epoch1999 elbo 27289.58877244729 ve_mean -181.45399058356224 kl 67.23513446680285
+epoch2999 elbo 27291.266733046505 ve_mean -183.24335650315135 kl 67.1378581889359
+epoch3999 elbo 27293.12823164114 ve_mean -185.24559055035664 kl 66.97948572777179
+epoch4999 elbo 27292.314210799883 ve_mean -183.78327910474928 kl 67.58417475247825
+task id: 1, test nlpd after task2: 2.9199605924992382
+task id: 1, test rmse after task2: 7.379441190235741
+task id: 1, test r2 after task2: 0.9122144986041638
+task id: 1, test ece after task2: 0.11000000461935996
+task id: 2, test nlpd after task2: 3.812676509139122
+task id: 2, test rmse after task2: 10.807589785862882
+task id: 2, test r2 after task2: 0.13797788207020156
+task id: 2, test ece after task2: 0.08833333179354667
+epoch0 elbo 30443.538600114716 ve_mean -262.5713096384301 kl 67.49221760714227
+epoch999 elbo 29079.44489352682 ve_mean -197.0232283822044 kl 87.24896106119289
+epoch1999 elbo 29080.278495206443 ve_mean -199.47898861097326 kl 87.10876041738936
+epoch2999 elbo 29080.67967931955 ve_mean -199.5718072290056 kl 87.50897833765161
+epoch3999 elbo 29082.60078105297 ve_mean -201.62952071938477 kl 87.33041404699088
+epoch4999 elbo 29081.48180520741 ve_mean -200.12430995025943 kl 87.71175982071867
+task id: 1, test nlpd after task3: 2.9193060276139553
+task id: 1, test rmse after task3: 7.408813217987362
+task id: 1, test r2 after task3: 0.9115142912220354
+task id: 1, test ece after task3: 0.12481482103466987
+task id: 2, test nlpd after task3: 3.721919633420191
+task id: 2, test rmse after task3: 9.655055484572987
+task id: 2, test r2 after task3: 0.31202880878093786
+task id: 2, test ece after task3: 0.06666666865348816
+task id: 3, test nlpd after task3: 3.862459922255
+task id: 3, test rmse after task3: 11.333964225728627
+task id: 3, test r2 after task3: 0.6977589449848232
+task id: 3, test ece after task3: 0.12833333387970924
+epoch0 elbo 32144.46996010915 ve_mean -429.00918773432966 kl 87.62505092993757
+epoch999 elbo 30935.73573843114 ve_mean -198.61335730265407 kl 113.49121502492213
+epoch1999 elbo 30929.928354428852 ve_mean -192.73477882059134 kl 113.91465220773678
+epoch2999 elbo 30931.204330741522 ve_mean -194.2655198607136 kl 113.58127542693299
+epoch3999 elbo 30942.630830949547 ve_mean -205.56114288698214 kl 113.74466017954484
+epoch4999 elbo 30933.895410530276 ve_mean -196.0887677570213 kl 114.49482776258397
+task id: 1, test nlpd after task4: 2.911193936972683
+task id: 1, test rmse after task4: 7.379558667765221
+task id: 1, test r2 after task4: 0.9122117035670736
+task id: 1, test ece after task4: 0.12481481656432152
+task id: 2, test nlpd after task4: 3.7146381367915184
+task id: 2, test rmse after task4: 9.556717726364836
+task id: 2, test r2 after task4: 0.3259715593991447
+task id: 2, test ece after task4: 0.07500001639127732
+task id: 3, test nlpd after task4: 3.9838152579045016
+task id: 3, test rmse after task4: 12.258633232650524
+task id: 3, test r2 after task4: 0.6464312406662955
+task id: 3, test ece after task4: 0.13333332687616348
+task id: 4, test nlpd after task4: 3.7831859967409494
+task id: 4, test rmse after task4: 11.47509687193418
+task id: 4, test r2 after task4: 0.8032436091384401
+task id: 4, test ece after task4: 0.03666665554046631
+epoch0 elbo 33380.99087311392 ve_mean -451.83836294761045 kl 114.38885856750034
+epoch999 elbo 32327.206280451097 ve_mean -214.0381584201337 kl 131.5832172162662
+epoch1999 elbo 32343.54054853593 ve_mean -229.25424794609205 kl 133.1352237953115
+epoch2999 elbo 32334.44051945663 ve_mean -220.3565572194101 kl 133.00746172698095
+epoch3999 elbo 32323.6071011691 ve_mean -209.61439915042888 kl 132.93823829806792
+epoch4999 elbo 32334.44689484414 ve_mean -220.48636907375308 kl 132.85155161410634
+task id: 1, test nlpd after task5: 2.945992053393458
+task id: 1, test rmse after task5: 7.604929185828348
+task id: 1, test r2 after task5: 0.9067677445264779
+task id: 1, test ece after task5: 0.12037036940455437
+task id: 2, test nlpd after task5: 3.73811849630428
+task id: 2, test rmse after task5: 9.810413434598603
+task id: 2, test r2 after task5: 0.2897106143339281
+task id: 2, test ece after task5: 0.0833333469927311
+task id: 3, test nlpd after task5: 3.939522261408621
+task id: 3, test rmse after task5: 11.937560988546718
+task id: 3, test r2 after task5: 0.6647097008453958
+task id: 3, test ece after task5: 0.1366666689515114
+task id: 4, test nlpd after task5: 3.6093691339430674
+task id: 4, test rmse after task5: 9.063357860511115
+task id: 4, test r2 after task5: 0.877257664422833
+task id: 4, test ece after task5: 0.06500000581145286
+task id: 5, test nlpd after task5: 4.609513486234423
+task id: 5, test rmse after task5: 18.348926696486615
+task id: 5, test r2 after task5: 0.36324707155926383
+task id: 5, test ece after task5: 0.2750000022351742
+log_ls: 0.0, log_sf: 0.0, nu: 3.0336031913757324
+test nlpd after task1: 4.874150016509883
+test rmse after task1: 31.72709195073039
+test r2 after task1: -0.6226930514236895
+test ece after task1: 0.21296296417713165
+log_ls: 0.0, log_sf: 0.0, nu: 3.0336031913757324
+test nlpd after task1: 4.874150016509883
+test rmse after task1: 31.72709195073039
+test r2 after task1: -0.6226930514236895
+test ece after task1: 0.21296296417713165
+epoch0 elbo nan ve_mean -472.4422868135356 kl 44.735507732316876
+epoch999 elbo nan ve_mean -459.53885453892815 kl 63.96630491615812
+epoch1999 elbo nan ve_mean -460.3869560863284 kl 65.71646274322437
+epoch2999 elbo nan ve_mean -455.9000948164021 kl 64.42697356064996
+epoch3999 elbo nan ve_mean -458.6829086103811 kl 64.0848200405908
+epoch4999 elbo nan ve_mean -458.9123270271188 kl 64.38951645374563
+task id: 1, test nlpd after task2: 4.732207317047903
+task id: 1, test rmse after task2: 30.542143593826687
+task id: 1, test r2 after task2: -0.503747337011516
+task id: 1, test ece after task2: 0.22407407239079474
+task id: 2, test nlpd after task2: 9.42955433955862
+task id: 2, test rmse after task2: 98.39717327664408
+task id: 2, test r2 after task2: -70.45390191021343
+task id: 2, test ece after task2: 0.483333333581686
+epoch0 elbo nan ve_mean -409.9104232681681 kl 64.3989537996301
+epoch999 elbo nan ve_mean -404.47319134999475 kl 77.65815884159174
+epoch1999 elbo nan ve_mean -404.3600121011365 kl 78.142279498391
+epoch2999 elbo nan ve_mean -401.31737685444756 kl 78.2468066821933
+epoch3999 elbo nan ve_mean -403.52908113520823 kl 79.11994577221583
+epoch4999 elbo nan ve_mean -403.9525412706302 kl 77.8620662531207
+task id: 1, test nlpd after task3: 4.6683841823873085
+task id: 1, test rmse after task3: 29.90018352139107
+task id: 1, test r2 after task3: -0.4411976650688809
+task id: 1, test ece after task3: 0.23888888582587242
+task id: 2, test nlpd after task3: 9.252979111453786
+task id: 2, test rmse after task3: 97.27769082380844
+task id: 2, test r2 after task3: -68.83726296688167
+task id: 2, test ece after task3: 0.483333333581686
+task id: 3, test nlpd after task3: 8.000108367492789
+task id: 3, test rmse after task3: 75.20748529360625
+task id: 3, test r2 after task3: -12.307973164110782
+task id: 3, test ece after task3: 0.45000000223517417
+log_ls: 0.0, log_sf: 0.0, nu: 3.0336031913757324
+test nlpd after task1: 4.874150016509883
+test rmse after task1: 31.72709195073039
+test r2 after task1: -0.6226930514236895
+test ece after task1: 0.21296296417713165
+epoch0 elbo nan ve_mean -472.4422868135356 kl 44.735507732316876
+epoch999 elbo nan ve_mean -459.53885453892815 kl 63.96630491615812
+epoch1999 elbo nan ve_mean -460.3869560863284 kl 65.71646274322437
+epoch2999 elbo nan ve_mean -455.9000948164021 kl 64.42697356064996
+epoch3999 elbo nan ve_mean -458.6829086103811 kl 64.0848200405908
+epoch4999 elbo nan ve_mean -458.9123270271188 kl 64.38951645374563
+task id: 1, test nlpd after task2: 4.732207317047903
+task id: 1, test rmse after task2: 30.542143593826687
+task id: 1, test r2 after task2: -0.503747337011516
+task id: 1, test ece after task2: 0.22407407239079474
+task id: 2, test nlpd after task2: 9.42955433955862
+task id: 2, test rmse after task2: 98.39717327664408
+task id: 2, test r2 after task2: -70.45390191021343
+task id: 2, test ece after task2: 0.483333333581686
+epoch0 elbo nan ve_mean -409.9104232681681 kl 64.3989537996301
+epoch999 elbo nan ve_mean -404.47319134999475 kl 77.65815884159174
+epoch1999 elbo nan ve_mean -404.3600121011365 kl 78.142279498391
+epoch2999 elbo nan ve_mean -401.31737685444756 kl 78.2468066821933
+epoch3999 elbo nan ve_mean -403.52908113520823 kl 79.11994577221583
+epoch4999 elbo nan ve_mean -403.9525412706302 kl 77.8620662531207
+task id: 1, test nlpd after task3: 4.6683841823873085
+task id: 1, test rmse after task3: 29.90018352139107
+task id: 1, test r2 after task3: -0.4411976650688809
+task id: 1, test ece after task3: 0.23888888582587242
+task id: 2, test nlpd after task3: 9.252979111453786
+task id: 2, test rmse after task3: 97.27769082380844
+task id: 2, test r2 after task3: -68.83726296688167
+task id: 2, test ece after task3: 0.483333333581686
+task id: 3, test nlpd after task3: 8.000108367492789
+task id: 3, test rmse after task3: 75.20748529360625
+task id: 3, test r2 after task3: -12.307973164110782
+task id: 3, test ece after task3: 0.45000000223517417
+epoch0 elbo nan ve_mean -357.7620974137652 kl 77.86654462740127
+epoch999 elbo nan ve_mean -354.9780617683029 kl 87.70734590255068
+epoch1999 elbo nan ve_mean -354.9927610908985 kl 87.98519872606492
+epoch2999 elbo nan ve_mean -352.95920509485745 kl 87.85534914250412
+epoch3999 elbo nan ve_mean -354.5590003369937 kl 87.67515306200414
+epoch4999 elbo nan ve_mean -354.87145434312856 kl 88.33747317885519
+task id: 1, test nlpd after task4: 4.630410795419889
+task id: 1, test rmse after task4: 29.47342696996973
+task id: 1, test r2 after task4: -0.40035166836458047
+task id: 1, test ece after task4: 0.25000000223517416
+task id: 2, test nlpd after task4: 9.137730229369524
+task id: 2, test rmse after task4: 96.50679612100114
+task id: 2, test r2 after task4: -67.7347726755755
+task id: 2, test ece after task4: 0.45833333358168604
+task id: 3, test nlpd after task4: 7.896826954160041
+task id: 3, test rmse after task4: 74.47136105553406
+task id: 3, test r2 after task4: -12.048733573759048
+task id: 3, test ece after task4: 0.45000000223517417
+task id: 4, test nlpd after task4: 7.564559312293534
+task id: 4, test rmse after task4: 70.18151210976654
+task id: 4, test r2 after task4: -6.3597246936310325
+task id: 4, test ece after task4: 0.44166667088866235
+epoch0 elbo nan ve_mean -310.6560306338281 kl 88.33964038922286
+epoch999 elbo nan ve_mean -310.01507493147085 kl 94.20856781779906
+epoch1999 elbo nan ve_mean -309.56232060874623 kl 94.47014587003864
+epoch2999 elbo nan ve_mean -307.882591206132 kl 94.44066056095815
+epoch3999 elbo nan ve_mean -310.059810359338 kl 94.39192935323322
+epoch4999 elbo nan ve_mean -309.47447348987856 kl 94.33022539917447
+task id: 1, test nlpd after task5: 4.6101325271214115
+task id: 1, test rmse after task5: 29.228476212600572
+task id: 1, test r2 after task5: -0.3771720217658505
+task id: 1, test ece after task5: 0.23888888880610465
+task id: 2, test nlpd after task5: 9.070749511671927
+task id: 2, test rmse after task5: 96.04387106434359
+task id: 2, test r2 after task5: -67.07693851678418
+task id: 2, test ece after task5: 0.45833333358168604
+task id: 3, test nlpd after task5: 7.835252464668059
+task id: 3, test rmse after task5: 74.01704669892746
+task id: 3, test r2 after task5: -11.890010965026125
+task id: 3, test ece after task5: 0.45000000223517417
+task id: 4, test nlpd after task5: 7.505070848903505
+task id: 4, test rmse after task5: 69.74129358060225
+task id: 4, test r2 after task5: -6.267685469307034
+task id: 4, test ece after task5: 0.44166667088866235
+task id: 5, test nlpd after task5: 8.889019792689432
+task id: 5, test rmse after task5: 94.68713124945515
+task id: 5, test r2 after task5: -15.956317398111668
+task id: 5, test ece after task5: 0.4750000022351742
+log_sf: 5.335285266572371, nu: -0.2319355010986328
+test nlpd after task1: 3.055317769167716
+test rmse after task1: 8.221020661660665
+test r2 after task1: 0.8910499782308685
+test ece after task1: 0.10481481030583381
+log_sf: 5.335285266572371, nu: -0.2319355010986328
+test nlpd after task1: 3.055317769167716
+test rmse after task1: 8.221020661660665
+test r2 after task1: 0.8910499782308685
+test ece after task1: 0.10481481030583381
+log_sf: 5.335285266572371, nu: -0.2319355010986328
+test nlpd after task1: 3.055317769167716
+test rmse after task1: 8.221020661660665
+test r2 after task1: 0.8910499782308685
+test ece after task1: 0.10481481030583381
+log_sf: 5.335285266572371, nu: -0.2319355010986328
+test nlpd after task1: 3.055317769167716
+test rmse after task1: 8.221020661660665
+test r2 after task1: 0.8910499782308685
+test ece after task1: 0.10481481030583381
+log_sf: 5.335285266572371, nu: -0.2319355010986328
+test nlpd after task1: 3.055317769167716
+test rmse after task1: 8.221020661660665
+test r2 after task1: 0.8910499782308685
+test ece after task1: 0.10481481030583381
+log_sf: 5.335285266572371, nu: -0.2319355010986328
+test nlpd after task1: 3.054906922175417
+test rmse after task1: 8.22245172620476
+test r2 after task1: 0.8910120442346002
+test ece after task1: 0.10481481030583381
+log_sf: 5.335285266572371, nu: -0.2319355010986328
+test nlpd after task1: 3.054906922175417
+test rmse after task1: 8.22245172620476
+test r2 after task1: 0.8910120442346002
+test ece after task1: 0.10481481030583381
+log_sf: 5.218737774666918, nu: 0.6533323526382446
+test nlpd after task1: 3.2504329316023926
+test rmse after task1: 10.06340109415609
+test r2 after task1: 0.8367454075361717
+test ece after task1: 0.09592593535780906
+log_sf: 5.218737774666918, nu: 0.6533323526382446
+test nlpd after task1: 3.2504329316023926
+test rmse after task1: 10.06340109415609
+test r2 after task1: 0.8367454075361717
+test ece after task1: 0.09592593535780906
+epoch0 elbo 18840.327305800845 ve_mean -2084.311068139891 kl 14.540538934545001
+task id: 1, test nlpd after task2: 5.412280478725445
+task id: 1, test rmse after task2: 21.463755823278518
+task id: 1, test r2 after task2: 0.2573447080501965
+task id: 1, test ece after task2: 0.4203703723847866
+task id: 2, test nlpd after task2: 6.122508344954509
+task id: 2, test rmse after task2: 35.42957615789383
+task id: 2, test r2 after task2: -8.263873555188184
+task id: 2, test ece after task2: 0.41666666492819787
+epoch0 elbo 15925.618613017517 ve_mean -1360.1590679251053 kl 58.72561264560637
+task id: 1, test nlpd after task3: 11.929987145994358
+task id: 1, test rmse after task3: 37.03836764719765
+task id: 1, test r2 after task3: -1.2114621894542608
+task id: 1, test ece after task3: 0.30555555447936056
+task id: 2, test nlpd after task3: 20.48241518677682
+task id: 2, test rmse after task3: 81.2877413615607
+task id: 2, test r2 after task3: -47.76529074290766
+task id: 2, test ece after task3: 0.533333333581686
+task id: 3, test nlpd after task3: 4.453142160784632
+task id: 3, test rmse after task3: 19.762640237271036
+task id: 3, test r2 after task3: 0.0810757531937355
+task id: 3, test ece after task3: 0.12499999180436135
+epoch0 elbo 14392.9654138125 ve_mean -1037.9763545302326 kl 122.12162739184305
+task id: 1, test nlpd after task4: 7.072965720058767
+task id: 1, test rmse after task4: 30.13855020038361
+task id: 1, test r2 after task4: -0.4642679475213063
+task id: 1, test ece after task4: 0.45000000223517417
+task id: 2, test nlpd after task4: 21.504885159381367
+task id: 2, test rmse after task4: 86.28299423588112
+task id: 2, test r2 after task4: -53.94284202442137
+task id: 2, test ece after task4: 0.5500000022351742
+task id: 3, test nlpd after task4: 8.79660804817537
+task id: 3, test rmse after task4: 46.78301543994022
+task id: 3, test r2 after task4: -4.1495135344040435
+task id: 3, test ece after task4: 0.3166666656732559
+task id: 4, test nlpd after task4: 5.076716278614488
+task id: 4, test rmse after task4: 27.141972931967373
+task id: 4, test r2 after task4: -0.10077600137084342
+task id: 4, test ece after task4: 0.1166666567325592
+epoch0 elbo 12910.92999630573 ve_mean -955.3620624552186 kl 126.03848213071784
+task id: 1, test nlpd after task5: 7.576995416839569
+task id: 1, test rmse after task5: 33.21517928800186
+task id: 1, test r2 after task5: -0.7784802387163043
+task id: 1, test ece after task5: 0.26481481492519376
+task id: 2, test nlpd after task5: 36.22977690729616
+task id: 2, test rmse after task5: 108.7007905892547
+task id: 2, test r2 after task5: -86.20193265482658
+task id: 2, test ece after task5: 0.5500000022351742
+task id: 3, test nlpd after task5: 14.437716240937565
+task id: 3, test rmse after task5: 65.860318700957
+task id: 3, test r2 after task5: -9.205574031214061
+task id: 3, test ece after task5: 0.37499999180436133
+task id: 4, test nlpd after task5: 4.2895212565102945
+task id: 4, test rmse after task5: 18.132693998636363
+task id: 4, test r2 after task5: 0.5087067562094574
+task id: 4, test ece after task5: 0.08999998942017555
+task id: 5, test nlpd after task5: 5.217957342187102
+task id: 5, test rmse after task5: 29.085089101271752
+task id: 5, test r2 after task5: -0.5998910790144998
+task id: 5, test ece after task5: 0.24750000163912772
+log_ls: 3.128578646276844, log_sf: 5.158547960059437, nu: -1.3731348514556885
+test nlpd after task1: 2.909103288961245
+test rmse after task1: 7.201945891587751
+test r2 after task1: 0.916386664178466
+test ece after task1: 0.1307407386600971
+epoch0 elbo 29256.668390492767 ve_mean -1440.3358235340077 kl 27.60486814914788
+epoch999 elbo 27290.995839187275 ve_mean -183.6199336878691 kl 65.8354339989219
+epoch1999 elbo 27289.58877244729 ve_mean -181.45399058356224 kl 67.23513446680285
+epoch2999 elbo 27291.266733046505 ve_mean -183.24335650315135 kl 67.1378581889359
+epoch3999 elbo 27293.12823164114 ve_mean -185.24559055035664 kl 66.97948572777179
+epoch4999 elbo 27292.314210799883 ve_mean -183.78327910474928 kl 67.58417475247825
+task id: 1, test nlpd after task2: 2.9199605924992382
+task id: 1, test rmse after task2: 7.379441190235741
+task id: 1, test r2 after task2: 0.9122144986041638
+task id: 1, test ece after task2: 0.11000000461935996
+task id: 2, test nlpd after task2: 3.812676509139122
+task id: 2, test rmse after task2: 10.807589785862882
+task id: 2, test r2 after task2: 0.13797788207020156
+task id: 2, test ece after task2: 0.08833333179354667
+epoch0 elbo 30443.538600114716 ve_mean -262.5713096384301 kl 67.49221760714227
+epoch999 elbo 29079.44489352682 ve_mean -197.0232283822044 kl 87.24896106119289
+epoch1999 elbo 29080.278495206443 ve_mean -199.47898861097326 kl 87.10876041738936
+epoch2999 elbo 29080.67967931955 ve_mean -199.5718072290056 kl 87.50897833765161
+epoch3999 elbo 29082.60078105297 ve_mean -201.62952071938477 kl 87.33041404699088
+epoch4999 elbo 29081.48180520741 ve_mean -200.12430995025943 kl 87.71175982071867
+task id: 1, test nlpd after task3: 2.9193060276139553
+task id: 1, test rmse after task3: 7.408813217987362
+task id: 1, test r2 after task3: 0.9115142912220354
+task id: 1, test ece after task3: 0.12481482103466987
+task id: 2, test nlpd after task3: 3.721919633420191
+task id: 2, test rmse after task3: 9.655055484572987
+task id: 2, test r2 after task3: 0.31202880878093786
+task id: 2, test ece after task3: 0.06666666865348816
+task id: 3, test nlpd after task3: 3.862459922255
+task id: 3, test rmse after task3: 11.333964225728627
+task id: 3, test r2 after task3: 0.6977589449848232
+task id: 3, test ece after task3: 0.12833333387970924
+epoch0 elbo 32144.46996010915 ve_mean -429.00918773432966 kl 87.62505092993757
+epoch999 elbo 30935.73573843114 ve_mean -198.61335730265407 kl 113.49121502492213
+epoch1999 elbo 30929.928354428852 ve_mean -192.73477882059134 kl 113.91465220773678
+epoch2999 elbo 30931.204330741522 ve_mean -194.2655198607136 kl 113.58127542693299
+epoch3999 elbo 30942.630830949547 ve_mean -205.56114288698214 kl 113.74466017954484
+epoch4999 elbo 30933.895410530276 ve_mean -196.0887677570213 kl 114.49482776258397
+task id: 1, test nlpd after task4: 2.911193936972683
+task id: 1, test rmse after task4: 7.379558667765221
+task id: 1, test r2 after task4: 0.9122117035670736
+task id: 1, test ece after task4: 0.12481481656432152
+task id: 2, test nlpd after task4: 3.7146381367915184
+task id: 2, test rmse after task4: 9.556717726364836
+task id: 2, test r2 after task4: 0.3259715593991447
+task id: 2, test ece after task4: 0.07500001639127732
+task id: 3, test nlpd after task4: 3.9838152579045016
+task id: 3, test rmse after task4: 12.258633232650524
+task id: 3, test r2 after task4: 0.6464312406662955
+task id: 3, test ece after task4: 0.13333332687616348
+task id: 4, test nlpd after task4: 3.7831859967409494
+task id: 4, test rmse after task4: 11.47509687193418
+task id: 4, test r2 after task4: 0.8032436091384401
+task id: 4, test ece after task4: 0.03666665554046631
+epoch0 elbo 33380.99087311392 ve_mean -451.83836294761045 kl 114.38885856750034
+epoch999 elbo 32327.206280451097 ve_mean -214.0381584201337 kl 131.5832172162662
+epoch1999 elbo 32343.54054853593 ve_mean -229.25424794609205 kl 133.1352237953115
+epoch2999 elbo 32334.44051945663 ve_mean -220.3565572194101 kl 133.00746172698095
+epoch3999 elbo 32323.6071011691 ve_mean -209.61439915042888 kl 132.93823829806792
+epoch4999 elbo 32334.44689484414 ve_mean -220.48636907375308 kl 132.85155161410634
+task id: 1, test nlpd after task5: 2.945992053393458
+task id: 1, test rmse after task5: 7.604929185828348
+task id: 1, test r2 after task5: 0.9067677445264779
+task id: 1, test ece after task5: 0.12037036940455437
+task id: 2, test nlpd after task5: 3.73811849630428
+task id: 2, test rmse after task5: 9.810413434598603
+task id: 2, test r2 after task5: 0.2897106143339281
+task id: 2, test ece after task5: 0.0833333469927311
+task id: 3, test nlpd after task5: 3.939522261408621
+task id: 3, test rmse after task5: 11.937560988546718
+task id: 3, test r2 after task5: 0.6647097008453958
+task id: 3, test ece after task5: 0.1366666689515114
+task id: 4, test nlpd after task5: 3.6093691339430674
+task id: 4, test rmse after task5: 9.063357860511115
+task id: 4, test r2 after task5: 0.877257664422833
+task id: 4, test ece after task5: 0.06500000581145286
+task id: 5, test nlpd after task5: 4.609513486234423
+task id: 5, test rmse after task5: 18.348926696486615
+task id: 5, test r2 after task5: 0.36324707155926383
+task id: 5, test ece after task5: 0.2750000022351742
