@@ -159,34 +159,31 @@ class FreqSpaceKernel(nn.Module):
     Time domain: k(τ) = σ² Σ_i γ_i cos(ω_i τ)
 
     Uses learnable frequencies and weights directly, without sampling like RFF.
+    Frequencies (omega) are parameterized directly and can be positive or negative,
+    initialized from N(0, 1) to match SE kernel with lengthscale=1.
     """
-    def __init__(self, num_components, device="cpu", dtype=torch.float64,
-                 init_omega_scale=1.0, init_gamma_scale=0.0):
+    def __init__(self, num_components, device="cpu", dtype=torch.float64):
         super().__init__()
         self.num_components = num_components
         self.device = device
         self.dtype = dtype
 
-        # Learnable frequencies (log scale for positivity)
-        # Initial values: approximately in the range of log(|N(0, init_omega_scale)|)
-        self.log_omega = nn.Parameter(
-            torch.log(torch.abs(torch.randn(num_components, dtype=dtype, device=device) * init_omega_scale) + 1e-6)
+        # Learnable frequencies (can be positive or negative, like SE kernel spectral samples)
+        # Initialized from N(0, 1) to match SE kernel with lengthscale=1
+        self.omega = nn.Parameter(
+            torch.randn(num_components, dtype=dtype, device=device)
         )
 
-        # Learnable weights (log scale, normalized via softmax)
+        # Learnable weights (normalized via softmax)
+        # Initialize to log(1/num_components) so initial gamma = 1/num_components (uniform)
         self.log_gamma_raw = nn.Parameter(
-            torch.randn(num_components, dtype=dtype, device=device) * init_gamma_scale
+            torch.full((num_components,), math.log(1.0 / num_components), dtype=dtype, device=device)
         )
 
         # Signal variance (for compatibility with other kernels)
         self.log_sf = nn.Parameter(
             torch.tensor(0.0, dtype=dtype, device=device)
         )
-
-    @property
-    def omega(self):
-        """Frequencies (positive values)."""
-        return torch.exp(self.log_omega)
 
     @property
     def gamma(self):
