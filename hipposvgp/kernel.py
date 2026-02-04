@@ -151,6 +151,95 @@ class SE_kernel(nn.Module):
             num_rff, device=self.device
         )  # we ignore signal variance here, but will multiply it back later
 
+class FreqSpaceKernel(nn.Module):
+    """Kernel parameterized directly in frequency space.
+
+    Spectral density: S(ω) = σ² Σ_i γ_i δ(ω - ω_i)
+    Time domain: k(τ) = σ² Σ_i γ_i cos(ω_i τ)
+
+    Uses learnable frequencies and weights directly, without sampling like RFF.
+    Frequencies (omega) are parameterized directly and can be positive or negative,
+    initialized from N(0, 1) to match SE kernel with lengthscale=1.
+    """
+    def __init__(self, num_components, device="cpu", dtype=torch.float64):
+        super().__init__()
+        self.num_components = num_components
+        self.device = device
+        self.dtype = dtype
+
+        # Learnable frequencies (can be positive or negative, like SE kernel spectral samples)
+        # Initialized from N(0, 1) to match SE kernel with lengthscale=1
+        self.omega = nn.Parameter(
+            torch.randn(num_components, dtype=dtype, device=device)
+        )
+
+        # Learnable weights (normalized via softmax)
+        # Initialize to log(1/num_components) so initial gamma = 1/num_components (uniform)
+        self.log_gamma_raw = nn.Parameter(
+            torch.full((num_components,), math.log(1.0 / num_components), dtype=dtype, device=device)
+        )
+
+        # Signal variance (for compatibility with other kernels)
+        self.log_sf = nn.Parameter(
+            torch.tensor(0.0, dtype=dtype, device=device)
+        )
+
+    @property
+    def gamma(self):
+        """Normalized weights (sum to 1)."""
+        return torch.softmax(self.log_gamma_raw, dim=0)
+
+    def sample_from_spectral(self, num_rff=None):
+        """For compatibility - returns learned omega without sampling.
+
+        Args:
+            num_rff: Ignored (exists for compatibility).
+
+        Returns:
+            omega: [num_components] Learned frequencies.
+        """
+        return self.omega
+
+    def get_weights(self):
+        """Returns weights (called from HSVGP).
+
+        Returns:
+            gamma: [num_components] Normalized weights.
+        """
+        return self.gamma
+
+    def forward(self, X1: torch.Tensor, X2: torch.Tensor = None, diag: bool = False):
+        """Compute kernel matrix.
+
+        k(x1, x2) = σ² Σ_i γ_i cos(ω_i (x1 - x2))
+        """
+        if X2 is None:
+            X2 = X1
+
+        omega = self.omega      # [R]
+        gamma = self.gamma      # [R]
+        sf = torch.exp(self.log_sf)
+
+        if diag:
+            # Diagonal elements: k(x, x) = σ² Σ_i γ_i cos(0) = σ² Σ_i γ_i = σ²
+            if X1.dim() == 2:
+                return sf * torch.ones(X1.shape[0], dtype=self.dtype, device=self.device)
+            else:
+                return sf * torch.ones(X1.shape[:-1], dtype=self.dtype, device=self.device)
+
+        # Compute differences
+        if X1.dim() == 3:  # [batch, N, D]
+            diff = X1.unsqueeze(2) - X2.unsqueeze(1)  # [batch, N, M, D]
+            diff = diff.sum(-1)  # [batch, N, M] (assuming 1D input)
+            # cos(ω_i * diff) for each ω_i
+            cos_terms = torch.cos(omega.view(1, 1, 1, -1) * diff.unsqueeze(-1))  # [batch, N, M, R]
+            # Weighted sum
+            return sf * (cos_terms * gamma.view(1, 1, 1, -1)).sum(-1)  # [batch, N, M]
+        else:  # [N, D]
+            diff = X1.unsqueeze(1) - X2.unsqueeze(0)  # [N, M, D]
+            diff = diff.sum(-1)  # [N, M]
+            cos_terms = torch.cos(omega.view(1, 1, -1) * diff.unsqueeze(-1))  # [N, M, R]
+            return sf * (cos_terms * gamma.view(1, 1, -1)).sum(-1)  # [N, M]
 
 if __name__ == "__main__":
     torch.manual_seed(42)
