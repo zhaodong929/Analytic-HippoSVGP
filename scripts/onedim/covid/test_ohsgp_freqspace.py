@@ -6,7 +6,7 @@ from hipposvgp.hsvgp_analytic import HIPPOOSVGP
 from hipposvgp.hsvgp import HIPPOOSVGP as HIPPOOSVGP_NUM
 from hipposvgp.hippo import HiPPO_LegS
 from hipposvgp.likelihood import NegativeBinomial
-from hipposvgp.kernel import SE_kernel
+from hipposvgp.kernel import FreqSpaceKernel
 from scripts.onedim.covid.data import COVIDDataset
 import random
 import matplotlib.pyplot as plt
@@ -88,7 +88,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     end = start + num_discrete_steps * step_size
     maxT = end - start
 
-    kernel = SE_kernel(1, device=device)
+    kernel = FreqSpaceKernel(num_components=rff_sample_size, device=device)
     likelihood = NegativeBinomial()
     likelihood = likelihood.to(device)
 
@@ -226,7 +226,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
         #        log.append(f"epoch{epoch} elbo {loss.item()} ve_mean {ve_mean.item()} kl {kl.item()}\n")
     
     #model.load_state_dict(torch.load('./ohsgp_'+str(inducing_size)+'z_dayu/models'+str(args.seed_num)+'/model1'))
-    log.append('log_ls: {}, log_sf: {}, nu: {}\n'.format(model.kernel.log_ls.item(), model.kernel.log_sf.item(), model.likelihood._nu.item()))
+    log.append('log_sf: {}, nu: {}\n'.format(model.kernel.log_sf.item(), model.likelihood._nu.item()))
     
     # compute test metric        
     w = model.kernel.sample_from_spectral(rff_sample_size).unsqueeze(0)
@@ -255,13 +255,13 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
         ece_list.append(torch.abs(torch.mean((((((deaths_pred_lower - deaths_test.squeeze(1)) < 0)+0.) + (((deaths_pred_upper - deaths_test.squeeze(1)) > 0)+0.)) > 1)+0.) - conf).item())
     ece = np.mean(np.array(ece_list))
     log.append('test ece after task1: {}\n'.format(ece))
-    metrics_path = './ohsgp_analytic/models'+str(args.seed_num)+'/metrics.csv'
+    metrics_path = './ohsgp_freqspace/models'+str(args.seed_num)+'/metrics.csv'
     _append_metrics_row(
         metrics_path,
         "eval_task,after_task,rmse,r2,nlpd,ece",
         f"1,1,{rmse},{r2},{nlpd},{ece}",
     )
-    with open('./ohsgp_analytic/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
+    with open('./ohsgp_freqspace/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
     #with open('./training.log', "a+") as log_file:
         log_file.writelines(log)
         log.clear()
@@ -284,7 +284,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     plt.ylabel("Predicted Deaths")
     plt.title("Posterior Summary of Predicted Deaths")
     plt.legend()
-    plt.savefig('./ohsgp_analytic/models'+str(args.seed_num)+'/covid_task1.png', format='png')
+    plt.savefig('./ohsgp_freqspace/models'+str(args.seed_num)+'/covid_task1.png', format='png')
     #prev_days_test_np = days_test.detach().cpu().numpy()
     #prev_deaths_test_np = deaths_test.detach().cpu().numpy()
     #prev_days_train_np = days_train.detach().cpu().numpy()
@@ -419,7 +419,8 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
 
     prev_discrete_steps += num_discrete_steps
 
-    model.kernel.log_ls.requires_grad = False
+    model.kernel.log_omega.requires_grad = False
+    model.kernel.log_gamma_raw.requires_grad = False
     model.kernel.log_sf.requires_grad = False
     model.likelihood._nu.requires_grad = False
     model.mv = nn.Parameter(torch.tensor(prev_model.mv.clone().detach().cpu().numpy(), device=device))
@@ -460,7 +461,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
     days_test_list.append(days_test)
     #deaths_test = torch.concatenate([prev_deaths_test, deaths_test])
     deaths_test_list.append(deaths_test)
-    metrics_path = './ohsgp_analytic/models'+str(args.seed_num)+'/metrics.csv'
+    metrics_path = './ohsgp_freqspace/models'+str(args.seed_num)+'/metrics.csv'
     count = 0
     for days_test in days_test_list:
         mean, var = model.pred_f(days_test, w)
@@ -492,7 +493,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
             "eval_task,after_task,rmse,r2,nlpd,ece",
             f"{count+1},{task_id},{rmse},{r2},{nlpd},{ece}",
         )
-        with open('./ohsgp_analytic/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
+        with open('./ohsgp_freqspace/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
         #with open('./training.log', "a+") as log_file:
             log_file.writelines(log)
             log.clear()
@@ -520,7 +521,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
     plt.ylabel("Predicted Deaths")
     plt.title("Posterior Summary of Predicted Deaths")
     plt.legend()
-    plt.savefig('./ohsgp_analytic/models'+str(args.seed_num)+'/covid_task'+str(task_id)+'.png', format='png')
+    plt.savefig('./ohsgp_freqspace/models'+str(args.seed_num)+'/covid_task'+str(task_id)+'.png', format='png')
     #prev_days_test = days_test
     #prev_deaths_test = deaths_test
     prev_days_test = days_test_list
@@ -543,7 +544,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
 if __name__ == '__main__':
     args = setup()
     seed_everything(args.seed_num)
-    os.makedirs('./ohsgp_analytic/models'+str(args.seed_num), exist_ok=True)
+    os.makedirs('./ohsgp_freqspace/models'+str(args.seed_num), exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     inducing_size = 15
     num_epochs = 5000
