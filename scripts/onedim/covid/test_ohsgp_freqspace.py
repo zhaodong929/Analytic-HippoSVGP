@@ -421,7 +421,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
 
     prev_discrete_steps += num_discrete_steps
 
-    model.kernel.log_omega.requires_grad = False
+    model.kernel.omega.requires_grad = False
     model.kernel.log_gamma_raw.requires_grad = False
     model.kernel.log_sf.requires_grad = False
     model.likelihood._nu.requires_grad = False
