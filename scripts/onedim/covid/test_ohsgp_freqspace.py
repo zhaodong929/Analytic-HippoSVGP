@@ -41,6 +41,7 @@ def _append_metrics_row(path, header, row):
 def setup():
     parser=argparse.ArgumentParser('Argument Parser')
     parser.add_argument('--seed_num',type=int,default=0)
+    parser.add_argument('--num_components',type=int,default=1000)
     args=parser.parse_args()
     return args
 
@@ -202,7 +203,8 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     optimizer = Adam(model.parameters(), lr=lr)
 
     # Initialize the plot
-    pbar = range(5000)#num_epochs)
+    from tqdm import tqdm
+    pbar = tqdm(range(num_epochs), desc="Task1 Training")
 
     log = []
     for epoch in pbar:
@@ -217,13 +219,13 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
             break
         loss.backward()
         optimizer.step()
-        
 
-        # Update plot every 100 epochs
-        #if epoch == 0 or epoch % 1000 == 999:
-        #    model.eval()
-        #    with torch.no_grad():
-        #        log.append(f"epoch{epoch} elbo {loss.item()} ve_mean {ve_mean.item()} kl {kl.item()}\n")
+        # Update progress bar
+        pbar.set_postfix({
+            'ELBO': f'{-loss.item():.2f}',
+            'VE': f'{ve_mean.item():.2f}',
+            'KL': f'{kl.item():.2f}'
+        })
     
     #model.load_state_dict(torch.load('./ohsgp_'+str(inducing_size)+'z_dayu/models'+str(args.seed_num)+'/model1'))
     log.append('log_sf: {}, nu: {}\n'.format(model.kernel.log_sf.item(), model.likelihood._nu.item()))
@@ -551,7 +553,8 @@ if __name__ == '__main__':
     lr = 1e-2
     step_size = 2
     hippo = HiPPO_LegS(inducing_size, device)
-    rff_sample_size = 1000
+    rff_sample_size = args.num_components
+    print(f"Using {rff_sample_size} frequency components")
 
     prev_model, prev_days_test, prev_deaths_test, prev_days_train, prev_deaths_train, w,\
          prev_discrete_steps, prev_end = train_task1(device, inducing_size, num_epochs, lr, step_size)
