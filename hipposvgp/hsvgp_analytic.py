@@ -1,4 +1,4 @@
-from hipposvgp.kernel import SE_kernel, SMK_kernel 
+from hipposvgp.kernel import SE_kernel, SMK_kernel, FreqSpaceKernel
 from hipposvgp.hippo import HiPPO_LegS
 from hipposvgp.utils import PositiveDefiniteParameter
 import torch
@@ -388,34 +388,57 @@ class HIPPOOSVGP(nn.Module):
     #     return SphericalBesselJFunction.apply(lmax, x)
     
 
+    def _get_rff_scale(self, num_rff):
+        """RFF特徴量のスケーリング係数を取得
+
+        FreqSpaceKernelの場合は学習済み重みのsqrt、
+        それ以外は均等重み (1/num_rff)^0.5 を返す。
+
+        Returns:
+            scale: [num_rff] or scalar
+        """
+        if hasattr(self.kernel, 'get_weights'):
+            gamma = self.kernel.get_weights()  # [num_components]
+            return torch.sqrt(gamma)  # [num_components]
+        else:
+            return (1 / num_rff) ** 0.5
+
     def _compute_Z_at_t(self, w_eff, t_index, phase_start):
-        # 1. Scaling Factor
-        scale = (1 / self.rff_sample_size) ** 0.5
-        
+        # 1. Scaling Factor (重み付き or 均等)
+        num_rff = w_eff.shape[-1]
+        scale = self._get_rff_scale(num_rff)  # [R] or scalar
+
         kappa = 0.5 * w_eff * t_index  # [1, num_rff]
         kappa = kappa
         L = torch.arange(self.inducing_size, dtype=self.dtype, device=self.device)
-        
+
         # 2. Compute Bessel
-        j = self.spherical_bessel_j(self.inducing_size-1, kappa) 
+        j = self.spherical_bessel_j(self.inducing_size-1, kappa)
         if len(j.shape) == 3: j = j.squeeze(1) # [M, R]
 
         # 3. Prefactor sqrt(2l+1)
         prefactor = torch.sqrt(2 * L + 1)[:, None]
-        
+
         # 4. Phase shift terms
         phase = kappa + L[:, None] * math.pi / 2
         cos_term = torch.cos(phase)
         sin_term = torch.sin(phase)
-        
+
         # 5. Combine
         Z_cos = prefactor * j * cos_term
         Z_sin = prefactor * j * sin_term
-        
 
-        # 6. Stack and Scale
-        Z = scale * torch.cat([Z_sin, Z_cos], dim=1).T
-        
+
+        # 6. Stack and Scale (scaleが[R]の場合はbroadcast)
+        # Z_sin, Z_cos: [M, R] -> cat -> [M, 2R]
+        # scale: [R] -> [2R] にするため repeat
+        if isinstance(scale, torch.Tensor) and scale.dim() > 0:
+            scale_full = torch.cat([scale, scale])  # [2R]
+            # [M, 2R].T -> [2R, M], scale_full[:, None] -> [2R, 1] for broadcasting
+            Z = scale_full[:, None] * torch.cat([Z_sin, Z_cos], dim=1).T  # [2R, M]
+        else:
+            Z = scale * torch.cat([Z_sin, Z_cos], dim=1).T
+
         return Z
 
     def get_Z_analytic(self, w):
@@ -462,23 +485,42 @@ class HIPPOOSVGP(nn.Module):
                 Kuolduold = self.Kaa_old
         return Z, Z_old_newk, Kuu, Kuuold, Kuolduold
 
+    def _compute_Z_f(self, w, X):
+        """データ点のRFF特徴量を計算 (重み付き対応)
+
+        Args:
+            w: [1, R] or [R] 周波数
+            X: [N, D] データ点
+
+        Returns:
+            Z_f: [N, 2R] RFF特徴量
+        """
+        num_rff = w.shape[-1]
+        scale = self._get_rff_scale(num_rff)  # [R] or scalar
+
+        sin_term = torch.sin(w * X)  # [N, R]
+        cos_term = torch.cos(w * X)  # [N, R]
+
+        if isinstance(scale, torch.Tensor) and scale.dim() > 0:
+            # 重み付き: scale is [R]
+            Z_f = torch.cat([scale * sin_term, scale * cos_term], 1)  # [N, 2R]
+        else:
+            # 均等重み
+            Z_f = scale * torch.cat([sin_term, cos_term], 1)  # [N, 2R]
+
+        return Z_f
+
     def KfuKff_rff_se(self, w, X):
         Z, _, _ = self.get_Z_analytic(w)
-        rff_sample_size = w.shape[1]
-        Z_f = (1 / rff_sample_size) ** 0.5 * torch.cat(
-            [torch.sin(w * X), torch.cos(w * X)], 1
-        )  # [n, num_rff]
-        
+        Z_f = self._compute_Z_f(w, X)  # [N, 2R]
+
         Kfu = Z_f @ Z
         Kff = Z_f @ Z_f.T
         return Kff, Kfu
 
     def KuuKfuKff_rff_se(self, w, X):
         Z, Z_old_newk, _ = self.get_Z_analytic(w)
-        rff_sample_size = w.shape[1]
-        Z_f = (1 / rff_sample_size) ** 0.5 * torch.cat(
-            [torch.sin(w * X), torch.cos(w * X)], 1
-        )  # [n, num_rff] 
+        Z_f = self._compute_Z_f(w, X)  # [N, 2R] 
         Kfu = Z_f @ Z 
         Kff = Z_f @ Z_f.T 
         Kuu = Z.T @ Z 
