@@ -153,12 +153,12 @@ class SE_kernel(nn.Module):
 
 
 class FreqSpaceKernel(nn.Module):
-    """周波数空間で直接パラメトライズするカーネル
+    """Kernel parameterized directly in frequency space.
 
-    スペクトル密度: S(ω) = σ² Σ_i γ_i δ(ω - ω_i)
-    時間領域: k(τ) = σ² Σ_i γ_i cos(ω_i τ)
+    Spectral density: S(ω) = σ² Σ_i γ_i δ(ω - ω_i)
+    Time domain: k(τ) = σ² Σ_i γ_i cos(ω_i τ)
 
-    RFFのようにサンプリングせず、学習可能な周波数と重みを直接使用。
+    Uses learnable frequencies and weights directly, without sampling like RFF.
     """
     def __init__(self, num_components, device="cpu", dtype=torch.float64,
                  init_omega_scale=1.0, init_gamma_scale=0.0):
@@ -167,53 +167,53 @@ class FreqSpaceKernel(nn.Module):
         self.device = device
         self.dtype = dtype
 
-        # 学習可能な周波数 (log scale for positivity)
-        # 初期値: log(|N(0, init_omega_scale)|) くらいの範囲
+        # Learnable frequencies (log scale for positivity)
+        # Initial values: approximately in the range of log(|N(0, init_omega_scale)|)
         self.log_omega = nn.Parameter(
             torch.log(torch.abs(torch.randn(num_components, dtype=dtype, device=device) * init_omega_scale) + 1e-6)
         )
 
-        # 学習可能な重み (log scale, softmaxで正規化)
+        # Learnable weights (log scale, normalized via softmax)
         self.log_gamma_raw = nn.Parameter(
             torch.randn(num_components, dtype=dtype, device=device) * init_gamma_scale
         )
 
-        # Signal variance (他カーネルとの互換性)
+        # Signal variance (for compatibility with other kernels)
         self.log_sf = nn.Parameter(
             torch.tensor(0.0, dtype=dtype, device=device)
         )
 
     @property
     def omega(self):
-        """周波数 (正の値)"""
+        """Frequencies (positive values)."""
         return torch.exp(self.log_omega)
 
     @property
     def gamma(self):
-        """正規化された重み (sum to 1)"""
+        """Normalized weights (sum to 1)."""
         return torch.softmax(self.log_gamma_raw, dim=0)
 
     def sample_from_spectral(self, num_rff=None):
-        """互換性のため - サンプルせず学習済みωを返す
+        """For compatibility - returns learned omega without sampling.
 
         Args:
-            num_rff: 無視される (互換性のため存在)
+            num_rff: Ignored (exists for compatibility).
 
         Returns:
-            omega: [num_components] 学習済み周波数
+            omega: [num_components] Learned frequencies.
         """
         return self.omega
 
     def get_weights(self):
-        """重みを返す (HSVGPから呼ばれる)
+        """Returns weights (called from HSVGP).
 
         Returns:
-            gamma: [num_components] 正規化された重み
+            gamma: [num_components] Normalized weights.
         """
         return self.gamma
 
     def forward(self, X1: torch.Tensor, X2: torch.Tensor = None, diag: bool = False):
-        """カーネル行列を計算
+        """Compute kernel matrix.
 
         k(x1, x2) = σ² Σ_i γ_i cos(ω_i (x1 - x2))
         """
@@ -225,19 +225,19 @@ class FreqSpaceKernel(nn.Module):
         sf = torch.exp(self.log_sf)
 
         if diag:
-            # 対角成分: k(x, x) = σ² Σ_i γ_i cos(0) = σ² Σ_i γ_i = σ²
+            # Diagonal elements: k(x, x) = σ² Σ_i γ_i cos(0) = σ² Σ_i γ_i = σ²
             if X1.dim() == 2:
                 return sf * torch.ones(X1.shape[0], dtype=self.dtype, device=self.device)
             else:
                 return sf * torch.ones(X1.shape[:-1], dtype=self.dtype, device=self.device)
 
-        # 差分を計算
+        # Compute differences
         if X1.dim() == 3:  # [batch, N, D]
             diff = X1.unsqueeze(2) - X2.unsqueeze(1)  # [batch, N, M, D]
-            diff = diff.sum(-1)  # [batch, N, M] (1D入力を想定)
+            diff = diff.sum(-1)  # [batch, N, M] (assuming 1D input)
             # cos(ω_i * diff) for each ω_i
             cos_terms = torch.cos(omega.view(1, 1, 1, -1) * diff.unsqueeze(-1))  # [batch, N, M, R]
-            # 重み付き和
+            # Weighted sum
             return sf * (cos_terms * gamma.view(1, 1, 1, -1)).sum(-1)  # [batch, N, M]
         else:  # [N, D]
             diff = X1.unsqueeze(1) - X2.unsqueeze(0)  # [N, M, D]
