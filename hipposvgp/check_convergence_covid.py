@@ -6,7 +6,7 @@ import sys
 import os
 import argparse
 
-# 导入项目中的模块
+# Import project modules
 sys.path.append(os.getcwd())
 
 from hipposvgp.hsvgp import HIPPOOSVGP as NumericalOSVGP
@@ -42,12 +42,12 @@ def check_covid_convergence(device='cuda'):
         log_print(f"Running COVID-19 Task 1 Convergence Check on {device}...")
 
         # ==========================================
-        # 1. 加载数据
+        # 1. Load data
         # ==========================================
         try:
             dataset = COVIDDataset("data/covid/processed_timeseries_5tasks/task_1")
         except FileNotFoundError:
-            log_print("Error: 找不到数据文件。请确保在项目根目录下运行。")
+            log_print("Error: Data file not found. Please run from the project root directory.")
             return
 
         dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
@@ -57,12 +57,13 @@ def check_covid_convergence(device='cuda'):
             N = num_days.double()
             break
         
-        # 数据切片
+        # Slice data
         days = days.permute(1,0)[:int(N[0].item())]
         
-        # --- [关键修复] 时间平移 ---
-        # 原始数据的 Start=15.0，会导致数值解(初始化为0)与解析解(积分至15)状态不一致。
-        # 我们将时间强行平移，使第一天变为 Day 0.0。
+        # --- [Key fix] Time shift ---
+        # The raw data starts at Start=15.0, which causes a state mismatch:
+        # numerical solution initializes at 0, while analytic solution integrates to 15.
+        # Shift time so the first day is Day 0.0.
         time_shift = torch.min(days).item()
         days = days - time_shift
         
@@ -73,7 +74,7 @@ def check_covid_convergence(device='cuda'):
         log_print(f"Data Loaded & Shifted: Start={start:.2f}, End={end_data:.2f}, Duration={maxT_data:.2f}")
 
         # ==========================================
-        # 2. 初始化 Kernel
+        # 2. Initialize kernel
         # ==========================================
         inducing_size = 15     
         rff_sample_size = 1000 
@@ -82,20 +83,20 @@ def check_covid_convergence(device='cuda'):
         
         kernel_base = SE_kernel(1).to(device)
         
-        # 使用你提供的真实训练值
+        # Use the real trained value you provided
         real_trained_log_ls = 3.1289
         kernel_base.log_ls.data.fill_(real_trained_log_ls)
         
         real_lengthscale_days = math.exp(real_trained_log_ls)
         log_print(f"Using REAL trained parameters: log_ls={real_trained_log_ls:.4f} (Lengthscale ≈ {real_lengthscale_days:.2f} days)")
         
-        # 生成频率 w
+        # Generate frequency tensor w
         w_fixed = (1.0 / torch.exp(kernel_base.log_ls)) * torch.randn(1, rff_sample_size, device=device)
         
         likelihood = NegativeBinomial().to(device)
 
         # ==========================================
-        # 3. 运行收敛性测试
+        # 3. Run convergence test
         # ==========================================
         step_sizes = [2.0, 1.0, 0.5, 0.1, 0.05, 0.01] 
         errors = []
@@ -109,10 +110,10 @@ def check_covid_convergence(device='cuda'):
             num_discrete_steps = math.ceil(maxT_data / dt)
             current_end = start + num_discrete_steps * dt
             
-            # 初始化 HiPPO (给足缓冲区)
+            # Initialize HiPPO (with extra buffer)
             hippo = HiPPO_LegS(inducing_size, device, max_length=num_discrete_steps + 200)
 
-            # A. 数值版模型
+            # A. Numerical model
             model_num = NumericalOSVGP(
                 kernel=SE_kernel(1),
                 likelihood=likelihood,
@@ -126,7 +127,7 @@ def check_covid_convergence(device='cuda'):
                 flag_update_kernel=False
             ).to(device)
 
-            # B. 解析版模型
+            # B. Analytic model
             model_ana = AnalyticOSVGP(
                 kernel=SE_kernel(1),
                 likelihood=likelihood,
@@ -141,12 +142,12 @@ def check_covid_convergence(device='cuda'):
                 use_analytic_Z=True
             ).to(device)
 
-            # C. 计算 Z
+            # C. Compute Z
             with torch.no_grad():
                 Z_num, _, _ = model_num.get_Z(w_fixed)
                 Z_ana, _, _ = model_ana.get_Z_analytic(w_fixed)
                 
-                # 计算误差
+                # Compute error
                 diff_norm = (Z_num - Z_ana).norm().item()
                 base_norm = Z_ana.norm().item()
                 
@@ -163,7 +164,7 @@ def check_covid_convergence(device='cuda'):
 
         log_print(f"\nResults saved to {log_file_path}")
 
-    # D. 绘图
+    # D. Plot
     plt.figure(figsize=(8, 6))
     plt.loglog(step_sizes, errors, 'o-', linewidth=2, label='Actual Error')
     plt.xlabel('Step Size ($\Delta t$)')

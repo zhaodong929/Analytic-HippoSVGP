@@ -391,10 +391,10 @@ class HIPPOOSVGP(nn.Module):
     
 
     def _get_rff_scale(self, num_rff):
-        """RFF特徴量のスケーリング係数を取得
+        """Get scaling coefficients for RFF features.
 
-        FreqSpaceKernelの場合は学習済み重みのsqrt、
-        それ以外は均等重み (1/num_rff)^0.5 を返す。
+        For `FreqSpaceKernel`, return the square root of learned weights.
+        Otherwise, return uniform scaling `(1/num_rff)^0.5`.
 
         Returns:
             scale: [num_rff] or scalar
@@ -406,7 +406,7 @@ class HIPPOOSVGP(nn.Module):
             return (1 / num_rff) ** 0.5
 
     def _compute_Z_at_t(self, w_eff, t_index, phase_start):
-        # 1. Scaling Factor (重み付き or 均等)
+        # 1. Scaling factor (weighted or uniform)
         num_rff = w_eff.shape[-1]
         scale = self._get_rff_scale(num_rff)  # [R] or scalar
 
@@ -433,9 +433,9 @@ class HIPPOOSVGP(nn.Module):
         Z_sin = prefactor * j * sin_term
 
 
-        # 6. Stack and Scale (scaleが[R]の場合はbroadcast)
+        # 6. Stack and scale (broadcast when scale is [R])
         # Z_sin, Z_cos: [M, R] -> cat -> [M, 2R]
-        # scale: [R] -> [2R] にするため repeat
+        # scale: [R] -> [2R] via repeat-by-concatenation
         if isinstance(scale, torch.Tensor) and scale.dim() > 0:
             scale_full = torch.cat([scale, scale])  # [2R]
             # [M, 2R].T -> [2R, M], scale_full[:, None] -> [2R, 1] for broadcasting
@@ -493,14 +493,14 @@ class HIPPOOSVGP(nn.Module):
         return Z, Z_old_newk, Kuu, Kuuold, Kuolduold
 
     def _compute_Z_f(self, w, X):
-        """データ点のRFF特徴量を計算 (重み付き対応)
+        """Compute RFF features for data points (supports weighting).
 
         Args:
-            w: [1, R] or [R] 周波数
-            X: [N, D] データ点
+            w: [1, R] or [R] frequency tensor
+            X: [N, D] data points
 
         Returns:
-            Z_f: [N, 2R] RFF特徴量
+            Z_f: [N, 2R] RFF features
         """
         num_rff = w.shape[-1]
         scale = self._get_rff_scale(num_rff)  # [R] or scalar
@@ -509,10 +509,10 @@ class HIPPOOSVGP(nn.Module):
         cos_term = torch.cos(w * X)  # [N, R]
 
         if isinstance(scale, torch.Tensor) and scale.dim() > 0:
-            # 重み付き: scale is [R]
+            # Weighted features: scale is [R]
             Z_f = torch.cat([scale * sin_term, scale * cos_term], 1)  # [N, 2R]
         else:
-            # 均等重み
+            # Uniform weighting
             Z_f = scale * torch.cat([sin_term, cos_term], 1)  # [N, 2R]
 
         return Z_f
