@@ -16,6 +16,16 @@ import torch.nn as nn
 import os
 import argparse
 import math
+from contextlib import contextmanager
+
+OUTPUT_DIR = None
+
+
+def get_output_dir():
+    if OUTPUT_DIR is None:
+        raise RuntimeError("OUTPUT_DIR is not initialized.")
+    return OUTPUT_DIR
+
 
 def _predict_mean(model, f_mean):
     if hasattr(model.likelihood, "link_fn"):
@@ -41,6 +51,14 @@ def _append_metrics_row(path, header, row):
 def setup():
     parser=argparse.ArgumentParser('Argument Parser')
     parser.add_argument('--seed_num',type=int,default=0)
+    parser.add_argument('--out_root', type=str, default='./ohsgp_analytic')
+    parser.add_argument(
+        '--phase_origin_mode',
+        type=str,
+        default='global_start',
+        choices=['zero', 'global_start'],
+        help='Analytic phase origin mode. global_start (default) enables w*phase_origin shift; use zero for legacy behavior.',
+    )
     args=parser.parse_args()
     return args
 
@@ -50,6 +68,17 @@ def seed_everything(seed=42):
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+@contextmanager
+def preserve_rng_state():
+    cpu_state = torch.random.get_rng_state()
+    cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        yield
+    finally:
+        torch.random.set_rng_state(cpu_state)
+        if cuda_state is not None:
+            torch.cuda.set_rng_state_all(cuda_state)
 
 
 def train_task1(device, inducing_size, num_epochs, lr, step_size):
@@ -104,6 +133,8 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
         device=device, 
         flag_update_kernel=False,
         use_analytic_Z=True,
+        phase_origin_mode=args.phase_origin_mode,
+        phase_origin=torch.min(days_train).item() if args.phase_origin_mode == "global_start" else 0.0,
     ).to(device)
 
     model_num = HIPPOOSVGP_NUM(
@@ -120,11 +151,13 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     ).to(device)
 
     with torch.no_grad():
-        w = model.kernel.sample_from_spectral(rff_sample_size).unsqueeze(0)
+        # Debug-only: do not disturb RNG sequence so w matches test_ohsgp.py.
+        with preserve_rng_state():
+            w = model.kernel.sample_from_spectral(rff_sample_size).unsqueeze(0)
 
-        # Z alignment
-        Z_num, Zold_num, _ = model_num.get_Z(w)
-        Z_ana, Zold_ana, _ = model.get_Z_analytic(w)
+            # Z alignment
+            Z_num, Zold_num, _ = model_num.get_Z(w)
+            Z_ana, Zold_ana, _ = model.get_Z_analytic(w)
 
         def stats(name, Z):
             diag = torch.diag(Z.T @ Z)
@@ -255,13 +288,13 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
         ece_list.append(torch.abs(torch.mean((((((deaths_pred_lower - deaths_test.squeeze(1)) < 0)+0.) + (((deaths_pred_upper - deaths_test.squeeze(1)) > 0)+0.)) > 1)+0.) - conf).item())
     ece = np.mean(np.array(ece_list))
     log.append('test ece after task1: {}\n'.format(ece))
-    metrics_path = './ohsgp_analytic/models'+str(args.seed_num)+'/metrics.csv'
+    metrics_path = os.path.join(get_output_dir(), 'metrics.csv')
     _append_metrics_row(
         metrics_path,
         "eval_task,after_task,rmse,r2,nlpd,ece",
         f"1,1,{rmse},{r2},{nlpd},{ece}",
     )
-    with open('./ohsgp_analytic/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
+    with open(os.path.join(get_output_dir(), 'training.log'), "a+") as log_file:
     #with open('./training.log', "a+") as log_file:
         log_file.writelines(log)
         log.clear()
@@ -284,7 +317,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     plt.ylabel("Predicted Deaths")
     plt.title("Posterior Summary of Predicted Deaths")
     plt.legend()
-    plt.savefig('./ohsgp_analytic/models'+str(args.seed_num)+'/covid_task1.png', format='png')
+    plt.savefig(os.path.join(get_output_dir(), 'covid_task1.png'), format='png')
     #prev_days_test_np = days_test.detach().cpu().numpy()
     #prev_deaths_test_np = deaths_test.detach().cpu().numpy()
     #prev_days_train_np = days_train.detach().cpu().numpy()
@@ -359,7 +392,9 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
         Lv_old=Lv_old,
         Kaa_old=Kuu_old,
         Z_old=Z_old,
-        flag_update_kernel=False
+        flag_update_kernel=False,
+        phase_origin_mode=args.phase_origin_mode,
+        phase_origin=getattr(prev_model, "phase_origin", 0.0),
     ).to(device)
 
     if task_id == 2:
@@ -460,7 +495,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
     days_test_list.append(days_test)
     #deaths_test = torch.concatenate([prev_deaths_test, deaths_test])
     deaths_test_list.append(deaths_test)
-    metrics_path = './ohsgp_analytic/models'+str(args.seed_num)+'/metrics.csv'
+    metrics_path = os.path.join(get_output_dir(), 'metrics.csv')
     count = 0
     for days_test in days_test_list:
         mean, var = model.pred_f(days_test, w)
@@ -492,7 +527,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
             "eval_task,after_task,rmse,r2,nlpd,ece",
             f"{count+1},{task_id},{rmse},{r2},{nlpd},{ece}",
         )
-        with open('./ohsgp_analytic/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
+        with open(os.path.join(get_output_dir(), 'training.log'), "a+") as log_file:
         #with open('./training.log', "a+") as log_file:
             log_file.writelines(log)
             log.clear()
@@ -520,7 +555,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
     plt.ylabel("Predicted Deaths")
     plt.title("Posterior Summary of Predicted Deaths")
     plt.legend()
-    plt.savefig('./ohsgp_analytic/models'+str(args.seed_num)+'/covid_task'+str(task_id)+'.png', format='png')
+    plt.savefig(os.path.join(get_output_dir(), 'covid_task'+str(task_id)+'.png'), format='png')
     #prev_days_test = days_test
     #prev_deaths_test = deaths_test
     prev_days_test = days_test_list
@@ -543,7 +578,8 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
 if __name__ == '__main__':
     args = setup()
     seed_everything(args.seed_num)
-    os.makedirs('./ohsgp_analytic/models'+str(args.seed_num), exist_ok=True)
+    OUTPUT_DIR = os.path.join(args.out_root, "models"+str(args.seed_num), args.phase_origin_mode)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     inducing_size = 15
     num_epochs = 5000
@@ -551,6 +587,8 @@ if __name__ == '__main__':
     step_size = 2
     hippo = HiPPO_LegS(inducing_size, device)
     rff_sample_size = 1000
+    print(f"[Analytic] phase_origin_mode={args.phase_origin_mode}")
+    print(f"[Output] dir={OUTPUT_DIR}")
 
     prev_model, prev_days_test, prev_deaths_test, prev_days_train, prev_deaths_train, w,\
          prev_discrete_steps, prev_end = train_task1(device, inducing_size, num_epochs, lr, step_size)

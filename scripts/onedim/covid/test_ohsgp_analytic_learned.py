@@ -213,8 +213,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
         model.train()
         optimizer.zero_grad()
         try:
-            weights = model.log_gamma
-            loss, ve_mean, kl = model.ELBO(days_train, deaths_train, w, weights=weights)
+            loss, ve_mean, kl = model.ELBO(days_train, deaths_train, w)
             loss = -loss  # Negate the loss for minimization
         except torch.linalg.LinAlgError as e:
             print(f"Caught LinAlgError: {e}")
@@ -235,7 +234,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     
     # compute test metric        
     w_eval = w.detach()
-    mean, var = model.pred_f(days_test, w_eval, weights=weights.detach())
+    mean, var = model.pred_f(days_test, w_eval)
     pred_mean = _predict_mean(model, mean)
     rmse, r2 = _rmse_r2(deaths_test, pred_mean)
     f_samples = mean + torch.sqrt(var) * torch.randn(1000, var.shape[0], var.shape[1]).to(device)  # [1000, Ntest, 1]
@@ -270,7 +269,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
         log_file.writelines(log)
         log.clear()
     days_plot = torch.linspace(torch.min(days_train), torch.max(days_train), 1000).to(device)
-    mean, var = model.pred_f(days_plot.unsqueeze(1), w_eval, weights=weights.detach())
+    mean, var = model.pred_f(days_plot.unsqueeze(1), w_eval)
 
     deaths_pred_mean_plot = mean.detach().cpu().numpy()
     var_plot = var.detach().cpu().numpy()
@@ -387,7 +386,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
                 model.log_sf.requires_grad = False
 
     w = model._get_w(None)
-    weights = model.log_gamma
+    # use model's internal learned weights
 
     if task_id == 2:
         model_num = HIPPOOSVGP_NUM(
@@ -464,16 +463,16 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
         try:
             if model.use_learned_spectral:
                 loss, ve_mean, kl = model.ELBO(
-                    days_train, deaths_train, w, weights=weights, recompute_k=True, cache_k=False
+                    days_train, deaths_train, w, recompute_k=True, cache_k=False
                 )
             else:
                 if epoch == 0:
                     loss, ve_mean, kl = model.ELBO(
-                        days_train, deaths_train, w, weights=weights, recompute_k=True, cache_k=True
+                        days_train, deaths_train, w, recompute_k=True, cache_k=True
                     )
                 else:
                     loss, ve_mean, kl = model.ELBO(
-                        days_train, deaths_train, w, weights=weights, recompute_k=False, cache_k=False
+                        days_train, deaths_train, w, recompute_k=False, cache_k=False
                     )
             loss = -loss  # Negate the loss for minimization
         except torch.linalg.LinAlgError as e:
@@ -498,7 +497,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
     metrics_path = './ohsgp_analytic_learned/models/metrics.csv'
     count = 0
     for days_test in days_test_list:
-        mean, var = model.pred_f(days_test, w, weights=weights.detach())
+        mean, var = model.pred_f(days_test, w)
         pred_mean = _predict_mean(model, mean)
         rmse, r2 = _rmse_r2(deaths_test_list[count], pred_mean)
         f_samples = mean + torch.sqrt(var) * torch.randn(1000, var.shape[0], var.shape[1]).to(device)  # [1000, Ntest, 1]
@@ -537,7 +536,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
     days_train = torch.concatenate([prev_days_train, days_train])
     deaths_train = torch.concatenate([prev_deaths_train, deaths_train])
     days_plot = torch.linspace(torch.min(days_train), torch.max(days_train), 1000).to(device)
-    mean, var = model.pred_f(days_plot.unsqueeze(1), w, weights=weights.detach())
+    mean, var = model.pred_f(days_plot.unsqueeze(1), w)
 
     deaths_pred_mean_plot = mean.detach().cpu().numpy()
     var_plot = var.detach().cpu().numpy()

@@ -37,6 +37,8 @@ class HIPPOOSVGP(nn.Module):
         self.dtype = dtype
         self.flag_fast = flag_fast
         self.use_analytic_Z = use_analytic_Z 
+        self.phase_origin_mode = kwargs.get("phase_origin_mode", "zero")
+        self.phase_origin = float(kwargs.get("phase_origin", 0.0))
 
         # Kernel selection
         self.kernel = kernel
@@ -421,6 +423,8 @@ class HIPPOOSVGP(nn.Module):
 
         # 4. Phase shift terms
         phase = kappa + L[:, None] * math.pi / 2
+        if self.phase_origin_mode == "global_start":
+            phase = phase_start + phase
         cos_term = torch.cos(phase)
         sin_term = torch.sin(phase)
 
@@ -446,10 +450,13 @@ class HIPPOOSVGP(nn.Module):
         
         step_size = self.maxT / self.num_discrete_steps
         w_eff = w * step_size
-        start_t = torch.as_tensor(
-            self.start + 0.5 * step_size, dtype=self.dtype, device=self.device
-        )
-        phase_start = w * start_t  # [1, R]
+        if self.phase_origin_mode == "global_start":
+            phase_origin = torch.as_tensor(
+                self.phase_origin, dtype=self.dtype, device=self.device
+            )
+            phase_start = w * phase_origin  # [1, R]
+        else:
+            phase_start = torch.zeros_like(w)
         t_index = torch.as_tensor(
             self.prev_discrete_steps + self.num_discrete_steps,
             dtype=self.dtype,

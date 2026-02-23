@@ -16,6 +16,15 @@ import os
 import argparse
 import math
 
+OUTPUT_DIR = None
+
+
+def get_output_dir():
+    if OUTPUT_DIR is None:
+        raise RuntimeError("OUTPUT_DIR is not initialized.")
+    return OUTPUT_DIR
+
+
 def _predict_mean(model, f_mean):
     if hasattr(model.likelihood, "link_fn"):
         return model.likelihood.link_fn(f_mean)
@@ -40,6 +49,7 @@ def _append_metrics_row(path, header, row):
 def setup():
     parser=argparse.ArgumentParser('Argument Parser')
     parser.add_argument('--seed_num',type=int,default=0)
+    parser.add_argument('--out_root', type=str, default='./ohsgp')
     args=parser.parse_args()
     return args
 
@@ -158,13 +168,13 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
         ece_list.append(torch.abs(torch.mean((((((deaths_pred_lower - deaths_test.squeeze(1)) < 0)+0.) + (((deaths_pred_upper - deaths_test.squeeze(1)) > 0)+0.)) > 1)+0.) - conf).item())
     ece = np.mean(np.array(ece_list))
     log.append('test ece after task1: {}\n'.format(ece))
-    metrics_path = './ohsgp/models'+str(args.seed_num)+'/metrics.csv'
+    metrics_path = os.path.join(get_output_dir(), 'metrics.csv')
     _append_metrics_row(
         metrics_path,
         "eval_task,after_task,rmse,r2,nlpd,ece",
         f"1,1,{rmse},{r2},{nlpd},{ece}",
     )
-    with open('./ohsgp/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
+    with open(os.path.join(get_output_dir(), 'training.log'), "a+") as log_file:
     #with open('./training.log', "a+") as log_file:
         log_file.writelines(log)
         log.clear()
@@ -186,7 +196,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     plt.ylabel("Predicted Deaths")
     plt.title("Posterior Summary of Predicted Deaths")
     plt.legend()
-    plt.savefig('./ohsgp/models'+str(args.seed_num)+'/covid_task1.png', format='png')
+    plt.savefig(os.path.join(get_output_dir(), 'covid_task1.png'), format='png')
     #prev_days_test_np = days_test.detach().cpu().numpy()
     #prev_deaths_test_np = deaths_test.detach().cpu().numpy()
     #prev_days_train_np = days_train.detach().cpu().numpy()
@@ -305,7 +315,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
     days_test_list.append(days_test)
     #deaths_test = torch.concatenate([prev_deaths_test, deaths_test])
     deaths_test_list.append(deaths_test)
-    metrics_path = './ohsgp/models'+str(args.seed_num)+'/metrics.csv'
+    metrics_path = os.path.join(get_output_dir(), 'metrics.csv')
     count = 0
     for days_test in days_test_list:
         mean, var = model.pred_f(days_test, w)
@@ -337,7 +347,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
             "eval_task,after_task,rmse,r2,nlpd,ece",
             f"{count+1},{task_id},{rmse},{r2},{nlpd},{ece}",
         )
-        with open('./ohsgp/models'+str(args.seed_num)+'/training.log', "a+") as log_file:
+        with open(os.path.join(get_output_dir(), 'training.log'), "a+") as log_file:
         #with open('./training.log', "a+") as log_file:
             log_file.writelines(log)
             log.clear()
@@ -364,7 +374,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
     plt.ylabel("Predicted Deaths")
     plt.title("Posterior Summary of Predicted Deaths")
     plt.legend()
-    plt.savefig('./ohsgp/models'+str(args.seed_num)+'/covid_task'+str(task_id)+'.png', format='png')
+    plt.savefig(os.path.join(get_output_dir(), 'covid_task'+str(task_id)+'.png'), format='png')
     #prev_days_test = days_test
     #prev_deaths_test = deaths_test
     prev_days_test = days_test_list
@@ -387,8 +397,9 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
 if __name__ == '__main__':
     args = setup()
     seed_everything(args.seed_num)
-    os.makedirs('./ohsgp/models'+str(args.seed_num), exist_ok=True)
-    metrics_path = './ohsgp/models'+str(args.seed_num)+'/metrics.csv'
+    OUTPUT_DIR = os.path.join(args.out_root, 'models'+str(args.seed_num))
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    metrics_path = os.path.join(OUTPUT_DIR, 'metrics.csv')
     with open(metrics_path, "w") as f:
         f.write("eval_task,after_task,rmse,r2,nlpd,ece\n")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -16,6 +16,7 @@ import torch.nn as nn
 import os
 import argparse
 import math
+from contextlib import contextmanager
 
 def _predict_mean(model, f_mean):
     if hasattr(model.likelihood, "link_fn"):
@@ -51,6 +52,18 @@ def seed_everything(seed=42):
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+@contextmanager
+def preserve_rng_state():
+    cpu_state = torch.random.get_rng_state()
+    cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        yield
+    finally:
+        torch.random.set_rng_state(cpu_state)
+        if cuda_state is not None:
+            torch.cuda.set_rng_state_all(cuda_state)
 
 
 def train_task1(device, inducing_size, num_epochs, lr, step_size):
@@ -121,11 +134,13 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     ).to(device)
 
     with torch.no_grad():
-        w = model.kernel.sample_from_spectral(rff_sample_size).unsqueeze(0)
+        # Debug-only: keep RNG sequence unchanged so training/eval randomness stays aligned.
+        with preserve_rng_state():
+            w = model.kernel.sample_from_spectral(rff_sample_size).unsqueeze(0)
 
-        # Z alignment
-        Z_num, Zold_num, _ = model_num.get_Z(w)
-        Z_ana, Zold_ana, _ = model.get_Z_analytic(w)
+            # Z alignment
+            Z_num, Zold_num, _ = model_num.get_Z(w)
+            Z_ana, Zold_ana, _ = model.get_Z_analytic(w)
 
         def stats(name, Z):
             diag = torch.diag(Z.T @ Z)

@@ -172,6 +172,19 @@ class HIPPOOSVGP(nn.Module):
         pi = self._get_spectral_weights(rff_sample_size, weights=weights)
         return torch.sqrt(pi)
 
+    def _get_rff_scale(self, rff_sample_size, weights=None):
+        """RFF scaling factor (supports learned weights or kernel weights)."""
+        if weights is None:
+            if self.use_learned_spectral and self.log_gamma is not None:
+                weights = self.log_gamma
+            elif self.kernel is not None and hasattr(self.kernel, "get_weights"):
+                gamma = self.kernel.get_weights()
+                return torch.sqrt(gamma)
+            else:
+                return (1 / rff_sample_size) ** 0.5
+        pi = self._get_spectral_weights(rff_sample_size, weights=weights)
+        return torch.sqrt(pi)
+
     # [Fix 4] add Robust Cholesky to prevent LinAlgError
     def robust_cholesky(self, matrix, base_jitter=1e-6, retries=10):
         jitter = base_jitter
@@ -475,11 +488,16 @@ class HIPPOOSVGP(nn.Module):
         Z_sin = prefactor * j * sin_term
         
 
-        # 6. Stack and Scale
+        # 6. Stack and Scale (weighted RFF)
         Z = torch.cat([Z_sin, Z_cos], dim=1).T
-        spectral_scale = self._get_spectral_scale(rff_sample_size, weights=weights)
-        spectral_scale = torch.cat([spectral_scale, spectral_scale], dim=1)
-        Z = spectral_scale.T * Z
+        scale = self._get_rff_scale(rff_sample_size, weights=weights)
+        if isinstance(scale, torch.Tensor) and scale.dim() > 0:
+            if scale.dim() == 2:
+                scale = scale.squeeze(0)
+            scale_full = torch.cat([scale, scale], dim=0)  # [2R]
+            Z = scale_full[:, None] * Z
+        else:
+            Z = scale * Z
         
         return Z
     
@@ -531,17 +549,23 @@ class HIPPOOSVGP(nn.Module):
                 Kuolduold = self.Kaa_old
         return Z, Z_old_newk, Kuu, Kuuold, Kuolduold
 
+    def _compute_Z_f(self, w, X, weights=None):
+        """Compute weighted RFF features at data points."""
+        num_rff = w.shape[-1]
+        scale = self._get_rff_scale(num_rff, weights=weights)
+        sin_term = torch.sin(w * X)
+        cos_term = torch.cos(w * X)
+        if isinstance(scale, torch.Tensor) and scale.dim() > 0:
+            if scale.dim() == 2:
+                scale = scale.squeeze(0)
+            Z_f = torch.cat([scale * sin_term, scale * cos_term], 1)
+        else:
+            Z_f = scale * torch.cat([sin_term, cos_term], 1)
+        return Z_f
+
     def KfuKff_rff_se(self, w, X, weights=None):
         Z, _, _ = self.get_Z_analytic(w, weights=weights)
-        rff_sample_size = w.shape[1]
-        spectral_scale = self._get_spectral_scale(rff_sample_size, weights=weights)
-        Z_f = torch.cat(
-            [
-                spectral_scale * torch.sin(w * X),
-                spectral_scale * torch.cos(w * X),
-            ],
-            1,
-        )
+        Z_f = self._compute_Z_f(w, X, weights=weights)
         
         Kfu = Z_f @ Z
         Kff = Z_f @ Z_f.T
@@ -549,15 +573,7 @@ class HIPPOOSVGP(nn.Module):
 
     def KuuKfuKff_rff_se(self, w, X, weights=None):
         Z, Z_old_newk, _ = self.get_Z_analytic(w, weights=weights)
-        rff_sample_size = w.shape[1]
-        spectral_scale = self._get_spectral_scale(rff_sample_size, weights=weights)
-        Z_f = torch.cat(
-            [
-                spectral_scale * torch.sin(w * X),
-                spectral_scale * torch.cos(w * X),
-            ],
-            1,
-        )
+        Z_f = self._compute_Z_f(w, X, weights=weights)
         Kfu = Z_f @ Z 
         Kff = Z_f @ Z_f.T 
         Kuu = Z.T @ Z 
