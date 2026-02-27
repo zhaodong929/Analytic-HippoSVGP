@@ -143,8 +143,59 @@ class HIPPO_SVGP_ANALYTIC(HIPPO_SVGP):
         Kff = Z_f @ Z_f.T
         return Kff, Kfu
 
+    def qb_opt(self, w):
+        if self.kernel_type != "se":
+            return super().qb_opt(w)
+
+        Kuu = self.Kuu_se(w, b=None, reducevar=True)
+        Kuu = torch.exp(self.Kernel.log_sf) * Kuu
+        Kuu += self.jitter * torch.mean(torch.diag(Kuu)).detach() * torch.eye(
+            self.inducing_size, device=self.device, dtype=self.dtype
+        )
+
+        Kfu = Kuu.clone()
+        _, Kfu_train = self.KfuKff_rff_se(w, self.X, b=None, reducevar=True)
+        Kfu_train = torch.exp(self.Kernel.log_sf) * Kfu_train
+
+        M_aux = Kuu + torch.exp(-self.log_noise) * (Kfu_train.T @ Kfu_train)
+        chol_M_aux = torch.linalg.cholesky(
+            M_aux
+            + self.jitter
+            * torch.mean(torch.diag(M_aux)).detach()
+            * torch.eye(self.inducing_size, device=self.device, dtype=self.dtype)
+        )
+
+        v1 = torch.linalg.solve_triangular(chol_M_aux, Kfu.T, upper=False)
+        v2 = torch.linalg.solve_triangular(chol_M_aux, Kfu_train.T @ self.y, upper=False)
+        mean = torch.exp(-self.log_noise) * v1.T @ v2
+        cov = v1.T @ v1
+        return mean, cov, Kuu
+
 
 class HIPPO_OSGPR_VFE_ANALYTIC(HIPPO_OSGPR_VFE):
+    def _robust_cholesky(self, matrix, base_jitter=1e-6, retries=8):
+        eye = torch.eye(matrix.shape[0], dtype=matrix.dtype, device=matrix.device)
+        diag_mean = torch.mean(torch.diag(matrix)).detach()
+        if not torch.isfinite(diag_mean) or diag_mean <= 0:
+            diag_mean = torch.tensor(1.0, dtype=matrix.dtype, device=matrix.device)
+        for i in range(retries):
+            factor = 10.0 ** i
+            try:
+                return torch.linalg.cholesky(matrix + base_jitter * factor * diag_mean * eye)
+            except torch.linalg.LinAlgError:
+                continue
+        return torch.linalg.cholesky(matrix + 1e-3 * diag_mean * eye)
+
+    def _project_psd(self, matrix, floor_scale=1e-8):
+        sym = 0.5 * (matrix + matrix.T)
+        evals, evecs = torch.linalg.eigh(sym)
+        diag_abs_mean = torch.mean(torch.abs(torch.diag(sym))).detach()
+        floor = floor_scale * diag_abs_mean
+        if not torch.isfinite(floor) or floor <= 0:
+            floor = torch.tensor(floor_scale, dtype=matrix.dtype, device=matrix.device)
+        evals = torch.clamp(evals, min=floor)
+        return (evecs * evals.unsqueeze(0)) @ evecs.T
+
     def get_Z(self, w):
         return _analytic_get_Z(self, w)
 
@@ -171,6 +222,71 @@ class HIPPO_OSGPR_VFE_ANALYTIC(HIPPO_OSGPR_VFE):
         Kuuold = Z.T @ self.Z_old
         Kuolduold = self.Z_old.T @ self.Z_old
         return Kff, Kfu, Kuu, Kuuold, Kuolduold
+
+    def _common_terms(self, w):
+        Mb = self.inducing_size
+        sigma2 = torch.exp(self.log_noise)
+        sigma = torch.sqrt(sigma2)
+
+        Saa = self.add_jitter(self._project_psd(self.Su_old))
+        ma = self.mu_old
+
+        Kff, Kfb, Kbb, Kba, Kaa_cur = self.KuuKfuKff_rff_se(w, self.X)
+        Kff = torch.exp(self.Kernel.log_sf) * Kff
+        Kfb = torch.exp(self.Kernel.log_sf) * Kfb
+        Kbf = Kfb.T
+        Kbb = torch.exp(self.Kernel.log_sf) * Kbb
+        Kba = torch.exp(self.Kernel.log_sf) * Kba
+        Kaa_cur = torch.exp(self.Kernel.log_sf) * Kaa_cur
+        Kbb = self.add_jitter(0.5 * (Kbb + Kbb.T))
+        Kaa_cur = self.add_jitter(0.5 * (Kaa_cur + Kaa_cur.T))
+        Kaa = self.add_jitter(self._project_psd(self.Kaa_old))
+
+        err = self.y
+
+        Sainv_ma = torch.linalg.solve(Saa, ma)
+        Sinv_y = self.y / sigma2
+        c1 = Kbf @ Sinv_y
+        c2 = Kba @ Sainv_ma
+        c = c1 + c2
+
+        Lb = self._robust_cholesky(Kbb)
+        Lbinv_c = torch.linalg.solve_triangular(Lb, c, upper=False)
+        Lbinv_Kba = torch.linalg.solve_triangular(Lb, Kba, upper=False)
+        Lbinv_Kbf = torch.linalg.solve_triangular(Lb, Kbf, upper=False) / sigma
+        d1 = Lbinv_Kbf @ Lbinv_Kbf.T
+
+        LSa = self._robust_cholesky(Saa)
+        Kab_Lbinv = Lbinv_Kba.T
+        LSainv_Kab_Lbinv = torch.linalg.solve_triangular(LSa, Kab_Lbinv, upper=False)
+        d2 = LSainv_Kab_Lbinv.T @ LSainv_Kab_Lbinv
+
+        La = self._robust_cholesky(Kaa)
+        Lainv_Kab_Lbinv = torch.linalg.solve_triangular(La, Kab_Lbinv, upper=False)
+        d3 = Lainv_Kab_Lbinv.T @ Lainv_Kab_Lbinv
+
+        D = torch.eye(Mb, device=self.device, dtype=self.dtype) + d1 + d2 - d3
+        D = self.add_jitter(0.5 * (D + D.T))
+        LD = self._robust_cholesky(D)
+
+        LDinv_Lbinv_c = torch.linalg.solve_triangular(LD, Lbinv_c, upper=False)
+
+        return (
+            Kff,
+            Kbf,
+            Kba,
+            Kaa,
+            Kaa_cur,
+            La,
+            Kbb,
+            Lb,
+            D,
+            LD,
+            Lbinv_Kba,
+            LDinv_Lbinv_c,
+            err,
+            d1,
+        )
 
 
 def resolve_fixed_hypers(args, x, y, device):
