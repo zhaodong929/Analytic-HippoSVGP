@@ -3,3 +3,13 @@ __pycache__/
 .ipynb_checkpoints/
 *.DS_Store
 .vscode/
+*.egg-info/
+/models/
+ohsgp*/
+*.pdf
+*.png
+*.xlsx
+convergence_*.txt
+solar_data_*.npy
+vff*_200z.png
+hsgp*_se_100z.pdf

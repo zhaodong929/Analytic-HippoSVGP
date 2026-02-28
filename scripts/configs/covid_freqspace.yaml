@@ -1,0 +1,28 @@
+experiment:
+  name: covid_freqspace
+  seed: 0
+
+dataset:
+  name: covid
+  path: data/covid/processed_timeseries_5tasks
+  num_tasks: 5
+
+model:
+  model_type: svgp
+  inducing_strategy: analytic_hippo
+  inducing_size: 15
+  rff_sample_size: 1000
+  step_size: 2.0
+  use_robust_cholesky: true
+
+kernel:
+  type: freq_space
+  num_components: 1000
+
+likelihood:
+  type: negative_binomial
+
+training:
+  num_epochs: 5000
+  lr: 0.01
+  fix_kernel_after_task1: true
