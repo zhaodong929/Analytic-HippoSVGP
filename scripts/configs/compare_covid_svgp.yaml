@@ -1,0 +1,27 @@
+experiment:
+  name: compare_covid_svgp
+  seed: 0
+  mode: compare
+  output_dir: results/compare_covid_svgp
+  share_spectral_sample: true
+
+dataset:
+  name: covid
+  path: data/covid/processed_timeseries_5tasks
+  num_tasks: 5
+
+base:
+  model_type: svgp
+  inducing_size: 15
+  rff_sample_size: 1000
+  step_size: 2.0
+  use_robust_cholesky: true
+  kernel: { type: se, input_dim: 1 }
+  likelihood: { type: negative_binomial, initial_nu: 0.5 }
+  training: { num_epochs: 5000, lr: 0.01, fix_kernel_after_task1: true }
+
+strategies:
+  ode:
+    inducing_strategy: hippo_ode
+  analytic:
+    inducing_strategy: analytic_hippo

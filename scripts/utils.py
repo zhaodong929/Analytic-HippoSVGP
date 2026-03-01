@@ -47,8 +47,12 @@ def train_loop(model, num_epochs, lr, *, compute_elbo, log_every=1000):
         lr: learning rate
         compute_elbo: callable () -> (elbo_scalar,) or () -> (elbo, ve, kl)
         log_every: print interval
+
+    Returns:
+        history: list of dicts with epoch-level metrics
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    history = []
 
     for epoch in range(num_epochs):
         model.train()
@@ -66,6 +70,13 @@ def train_loop(model, num_epochs, lr, *, compute_elbo, log_every=1000):
         neg_loss.backward()
         optimizer.step()
 
+        # Record history
+        entry = {"epoch": epoch, "elbo": loss.item()}
+        if isinstance(result, tuple) and len(result) == 3:
+            entry["ve"] = result[1].item()
+            entry["kl"] = result[2].item()
+        history.append(entry)
+
         if epoch % log_every == 0 or epoch == num_epochs - 1:
             if isinstance(result, tuple) and len(result) == 3:
                 elbo, ve, kl = result
@@ -75,3 +86,5 @@ def train_loop(model, num_epochs, lr, *, compute_elbo, log_every=1000):
                 )
             else:
                 print(f"  epoch {epoch:5d}  ELBO={loss.item():.2f}")
+
+    return history

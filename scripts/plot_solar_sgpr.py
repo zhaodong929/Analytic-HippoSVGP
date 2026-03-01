@@ -17,6 +17,7 @@ from hipposvgp.inducing import HiPPOInducing, AnalyticHiPPOInducing
 from hipposvgp.hippo import HiPPO_LegS
 from hipposvgp.models import ExactGP
 from hipposvgp.models.sgpr import OnlineSGPR
+from hipposvgp.rff import SpectralSample
 
 from scripts.datasets.solar import SolarOnlineDataset
 from scripts.utils import seed_everything, compute_time_window
@@ -75,17 +76,9 @@ def fit_task1_hyperparameters(dataset, device, cfg):
 
 
 def sample_fixed_spectral_sample(input_dim, device, fixed_hparams, rff_sample_size):
-    """Draw one spectral sample to be shared by all tasks."""
+    """Draw one SpectralSample to be shared by all tasks."""
     kernel = build_frozen_kernel(input_dim, device, fixed_hparams)
-    w = kernel.sample_from_spectral(rff_sample_size)
-    if isinstance(w, tuple):
-        raise TypeError(
-            "SpectralMixture tuple sample is not supported by SGPR plotting pipeline."
-        )
-    w = torch.as_tensor(w, dtype=torch.float64, device=device)
-    if w.dim() == 1:
-        w = w.unsqueeze(0)
-    return w.detach().clone()
+    return kernel.sample_from_spectral(rff_sample_size)
 
 
 def build_frozen_kernel(input_dim, device, fixed_hparams):
@@ -270,7 +263,7 @@ def main():
     }
     phase_origin = resolve_global_phase_origin(dataset_for_hparams)
     fixed_hparams = fit_task1_hyperparameters(dataset_for_hparams, device, cfg)
-    fixed_w = sample_fixed_spectral_sample(
+    fixed_sample = sample_fixed_spectral_sample(
         input_dim=1,
         device=device,
         fixed_hparams=fixed_hparams,
@@ -285,7 +278,7 @@ def main():
         cfg,
         fixed_hparams,
         phase_origin=phase_origin,
-        spectral_sample=fixed_w,
+        spectral_sample=fixed_sample,
     )
     print("Running Analytic...")
     results_ana = run_experiment(
@@ -295,7 +288,7 @@ def main():
         cfg,
         fixed_hparams,
         phase_origin=phase_origin,
-        spectral_sample=fixed_w,
+        spectral_sample=fixed_sample,
     )
 
     num_tasks = len(results_ode)

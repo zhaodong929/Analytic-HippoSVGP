@@ -69,6 +69,44 @@ def nlpd(mean, var, y_test, likelihood=None, num_mc_samples=1000, device="cpu"):
         )
 
 
+def gaussian_ece(mean, var, y_test, levels=None):
+    """Expected calibration error from Gaussian predictive distribution.
+
+    Computes ECE by checking what fraction of test points fall within
+    each confidence interval of the Gaussian predictive distribution.
+
+    Args:
+        mean: [N, 1] or [N] predictive mean
+        var: [N, 1] or [N] predictive variance
+        y_test: [N, 1] or [N] test targets
+        levels: confidence levels to check (default: 0.1 to 1.0)
+
+    Returns:
+        Scalar ECE value.
+    """
+    if levels is None:
+        levels = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+    mean = mean.squeeze()
+    var = var.squeeze()
+    y_test = y_test.squeeze()
+    std = torch.sqrt(var.clamp(min=1e-10))
+
+    # Standardized residuals
+    z = (y_test - mean) / std
+
+    ece_list = []
+    for conf in levels:
+        # For a Gaussian, the fraction within conf-level CI
+        # corresponds to |z| < quantile
+        from scipy.stats import norm
+        q = norm.ppf(0.5 + conf / 2)
+        in_interval = (z.abs() < q).float().mean()
+        ece_list.append(abs(in_interval.item() - conf))
+
+    return float(np.mean(ece_list))
+
+
 def expected_calibration_error(
     y_samples, y_test, levels=None
 ):
