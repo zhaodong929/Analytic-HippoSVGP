@@ -14,11 +14,11 @@ dataset:
 base:
   model_type: sgpr
   inducing_size: 100
-  rff_sample_size: 5000
+  rff_sample_size: 1000
   step_size: 2.45
   kernel: { type: se, input_dim: 1 }
   training: { num_epochs: 500, lr: 0.01, fix_kernel_after_task1: true }
-  exact_gp: { num_epochs: 500, lr: 0.05 }
+  exact_gp: { num_epochs: 2000, lr: 0.01, init_log_ls: 1.0, init_log_sf: -2.0, init_log_noise: -3.0, min_log_noise: -4.5 }
 
 strategies:
   ode:

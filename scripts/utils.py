@@ -51,7 +51,22 @@ def train_loop(model, num_epochs, lr, *, compute_elbo, log_every=1000):
     Returns:
         history: list of dicts with epoch-level metrics
     """
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    trainable = [p for p in model.parameters() if p.requires_grad]
+
+    # No trainable parameters → single closed-form evaluation
+    if not trainable:
+        model.eval()
+        with torch.no_grad():
+            result = compute_elbo()
+            loss = result[0] if isinstance(result, tuple) else result
+        entry = {"epoch": 0, "elbo": loss.item()}
+        if isinstance(result, tuple) and len(result) == 3:
+            entry["ve"] = result[1].item()
+            entry["kl"] = result[2].item()
+        print(f"  (no trainable params)  ELBO={loss.item():.2f}")
+        return [entry]
+
+    optimizer = torch.optim.Adam(trainable, lr=lr)
     history = []
 
     for epoch in range(num_epochs):

@@ -4,10 +4,10 @@ Reads saved results and generates posterior, metrics, and training plots.
 Does NOT import model code -- works entirely from saved files.
 
 Usage:
-    python -m scripts.plot results/compare_solar_sgpr/ --compare
-    python -m scripts.plot results/compare_solar_sgpr/ --compare --type posterior
-    python -m scripts.plot results/compare_solar_sgpr/ --compare --type metrics
-    python -m scripts.plot results/compare_solar_sgpr/ --compare --type training
+    python -m scripts.plot results/compare_solar_sgpr/ --type all
+    python -m scripts.plot results/compare_solar_sgpr/ --type posterior
+    python -m scripts.plot results/compare_solar_sgpr/ --type metrics
+    python -m scripts.plot results/compare_solar_sgpr/ --type training
 """
 
 import argparse
@@ -73,21 +73,26 @@ def _load_training_log(results_dir, strategy):
 
 
 def plot_posterior(results_dir, strategies=None):
-    """Plot posterior predictions: rows=tasks, columns=strategies."""
+    """Plot posterior predictions: rows=tasks, columns=strategies.
+
+    Each subplot shows the GP mean + 2sigma band on a dense grid covering
+    all seen data, with training data (all seen + current task highlighted)
+    and test data overlaid.
+    """
     if strategies is None:
         strategies = _discover_strategies(results_dir)
 
     all_preds = {s: _load_predictions(results_dir, s) for s in strategies}
     comp = _load_comparison_csv(results_dir)
 
-    # Get task IDs
     task_ids = sorted(all_preds[strategies[0]].keys())
     num_tasks = len(task_ids)
     num_strats = len(strategies)
 
     fig, axes = plt.subplots(
         num_tasks, num_strats,
-        figsize=(6 * num_strats, 3 * num_tasks),
+        figsize=(8 * num_strats, 3 * num_tasks),
+        sharex=True, sharey=True,
         squeeze=False,
     )
 
@@ -99,25 +104,55 @@ def plot_posterior(results_dir, strategies=None):
         for row, tid in enumerate(task_ids):
             ax = axes[row, col]
             p = preds[tid]
-            X_test = p["X_test"].squeeze().numpy()
-            y_test = p["y_test"].squeeze().numpy()
-            mean = p["mean"].squeeze().numpy()
-            var = p["var"].squeeze().numpy()
+
+            # Dense grid predictions
+            X_grid = p["X_grid"].squeeze().numpy()
+            mean = p["mean_grid"].squeeze().numpy()
+            var = p["var_grid"].squeeze().numpy()
             std = np.sqrt(np.maximum(var, 1e-10))
 
-            sort_idx = np.argsort(X_test)
-            X_s = X_test[sort_idx]
-            mean_s = mean[sort_idx]
-            std_s = std[sort_idx]
-            y_s = y_test[sort_idx]
-
+            # Confidence band + mean
             ax.fill_between(
-                X_s, mean_s - 2 * std_s, mean_s + 2 * std_s,
+                X_grid, mean - 2 * std, mean + 2 * std,
                 alpha=0.2, color="C0",
             )
-            ax.plot(X_s, mean_s, color="C0", linewidth=1.5)
-            ax.scatter(X_s, y_s, s=10, c="C1", alpha=0.5, zorder=3)
+            ax.plot(X_grid, mean, color="C0", linewidth=1.5)
 
+            # All seen training data
+            X_train_all = p["X_train_all"].squeeze().numpy()
+            y_train_all = p["y_train_all"].squeeze().numpy()
+            ax.scatter(
+                X_train_all, y_train_all,
+                s=12, c="C1", alpha=0.4, zorder=2, label="Train (seen)",
+            )
+
+            # Current task training data (highlighted)
+            X_cur = p["X_train_current"].squeeze().numpy()
+            y_cur = p["y_train_current"].squeeze().numpy()
+            ax.scatter(
+                X_cur, y_cur,
+                s=25, c="C3", edgecolors="black", linewidths=0.5,
+                zorder=3, label="Train (current)",
+            )
+
+            # All seen test data
+            X_test_all = p["X_test_all"].squeeze().numpy()
+            y_test_all = p["y_test_all"].squeeze().numpy()
+            ax.scatter(
+                X_test_all, y_test_all,
+                s=15, marker="x", c="C2", alpha=0.4, zorder=4, label="Test (seen)",
+            )
+
+            # Current task test data (highlighted)
+            X_test_cur = p["X_test_current"].squeeze().numpy()
+            y_test_cur = p["y_test_current"].squeeze().numpy()
+            ax.scatter(
+                X_test_cur, y_test_cur,
+                s=30, marker="x", c="C2", linewidths=1.5,
+                zorder=5, label="Test (current)",
+            )
+
+            # Metrics annotation
             m = metrics_by_task.get(tid, {})
             rmse_val = m.get("rmse", float("nan"))
             nlpd_val = m.get("nlpd", float("nan"))
@@ -133,6 +168,8 @@ def plot_posterior(results_dir, strategies=None):
                 ax.set_title(strat, fontsize=11, fontweight="bold")
             if col == 0:
                 ax.set_ylabel(f"Task {tid}", fontsize=10)
+            if row == 0 and col == num_strats - 1:
+                ax.legend(fontsize=7, loc="upper left", ncol=2)
 
     fig.tight_layout()
     out = os.path.join(results_dir, "posterior.png")
@@ -148,7 +185,7 @@ def plot_metrics(results_dir, strategies=None):
 
     comp = _load_comparison_csv(results_dir)
     metric_names = ["rmse", "nlpd", "r2", "ece"]
-    metric_labels = ["RMSE", "NLPD", "R^2", "ECE"]
+    metric_labels = ["RMSE", "NLPD", "R$^2$", "ECE"]
 
     fig, axes = plt.subplots(2, 2, figsize=(10, 7))
     axes = axes.flatten()
@@ -212,14 +249,12 @@ def plot_training(results_dir, strategies=None):
 def main():
     parser = argparse.ArgumentParser(description="Plot compare-mode results")
     parser.add_argument("results_dir", type=str, help="Path to results directory")
-    parser.add_argument("--compare", action="store_true", help="Compare mode flag")
     parser.add_argument(
         "--type", choices=["posterior", "metrics", "training", "all"],
         default="all", help="Plot type",
     )
     args = parser.parse_args()
 
-    plot_type = args.type
     strategies = _discover_strategies(args.results_dir)
     if not strategies:
         print(f"No strategy directories found in {args.results_dir}")
@@ -227,13 +262,13 @@ def main():
 
     print(f"Strategies: {strategies}")
 
-    if plot_type in ("posterior", "all"):
+    if args.type in ("posterior", "all"):
         plot_posterior(args.results_dir, strategies)
 
-    if plot_type in ("metrics", "all"):
+    if args.type in ("metrics", "all"):
         plot_metrics(args.results_dir, strategies)
 
-    if plot_type in ("training", "all"):
+    if args.type in ("training", "all"):
         plot_training(args.results_dir, strategies)
 
 

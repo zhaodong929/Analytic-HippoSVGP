@@ -122,6 +122,7 @@ def _draw_spectral_sample(kernel, R):
 def _build_and_train(
     model_type, kernel, task_data, inducing, device,
     prior_state, spectral_sample, model_cfg, train_cfg, task_id,
+    *, fitted_log_noise=None,
 ):
     """Build model, train, return (model, history)."""
     num_epochs = train_cfg.get("num_epochs", 500)
@@ -133,6 +134,10 @@ def _build_and_train(
             X=task_data.X_train, y=task_data.y_train,
             prior_state=prior_state, spectral_sample=spectral_sample,
         ).to(device)
+        # Transfer and freeze noise from ExactGP
+        if fitted_log_noise is not None:
+            model.log_noise.data.copy_(fitted_log_noise)
+            model.log_noise.requires_grad_(False)
         history = train_loop(model, num_epochs, lr, compute_elbo=model.elbo)
     else:
         likelihood = build_likelihood(
@@ -205,7 +210,8 @@ def evaluate_task(model, task_data, device, *, model_type):
 
 def run_strategy(
     dataset_cfg, device, model_cfg, train_cfg, kernel_cfg,
-    *, fitted_kernel=None, spectral_sample=None, phase_origin=0.0, seed=0,
+    *, fitted_kernel=None, fitted_log_noise=None,
+    spectral_sample=None, phase_origin=0.0, seed=0,
 ):
     """Run one inducing strategy across all tasks.
 
@@ -235,6 +241,10 @@ def run_strategy(
     prev_end = None
     prev_steps = 0
     all_test_data = []
+    all_X_train = []
+    all_y_train = []
+    all_X_test = []
+    all_y_test = []
     task_metrics = []
     training_logs = []
 
@@ -244,10 +254,12 @@ def run_strategy(
               f"(train={task_data.X_train.shape[0]}, "
               f"test={task_data.X_test.shape[0]}) ---")
 
-        # Kernel: fresh for task 1 (no pre-fitting), frozen copy for task 2+
+        # Kernel lifecycle:
+        #   - fitted_kernel (ExactGP): frozen for all tasks
+        #   - no fitted_kernel: learn on task 1, freeze for task 2+
         if base_kernel is not None:
             kernel = deepcopy(base_kernel)
-            if task_id > 1 and fix_kernel:
+            if fitted_kernel is not None or (task_id > 1 and fix_kernel):
                 for p in kernel.parameters():
                     p.requires_grad_(False)
         else:
@@ -267,6 +279,7 @@ def run_strategy(
         model, history = _build_and_train(
             model_type, kernel, task_data, inducing, device,
             prior_state, spectral_sample, model_cfg, train_cfg, task_id,
+            fitted_log_noise=fitted_log_noise,
         )
         wall_time = time.time() - t0
 
@@ -284,25 +297,45 @@ def run_strategy(
                 f"NLPD={metrics['nlpd']:.4f}  ECE={metrics['ece']:.4f}"
             )
 
-        # Save predictions
+        # Accumulate training and test data
+        all_X_train.append(task_data.X_train.cpu())
+        all_y_train.append(task_data.y_train.cpu())
+        all_X_test.append(task_data.X_test.cpu())
+        all_y_test.append(task_data.y_test.cpu())
+
+        # Predict on dense grid covering all seen data
+        X_all = torch.cat(all_X_train)
+        x_lo = X_all.min().item() - 5
+        x_hi = X_all.max().item() + 5
+        X_grid = torch.linspace(x_lo, x_hi, 300, dtype=torch.float64).unsqueeze(1).to(device)
+
         model.eval()
         with torch.no_grad():
             if model_type == "sgpr":
-                mean, var = model.predict(
-                    task_data.X_test, full_cov=False, include_noise=True,
+                grid_mean, grid_var = model.predict(
+                    X_grid, full_cov=False, include_noise=True,
                 )
+                if grid_var.dim() == 1:
+                    grid_var = grid_var.unsqueeze(1)
             else:
-                mean, var = model.predict(task_data.X_test)
+                grid_mean, grid_var = model.predict(X_grid)
 
         final_elbo = history[-1]["elbo"] if history else float("nan")
         task_metrics.append({
             **metrics, "task_id": task_id,
             "wall_time": wall_time, "final_elbo": final_elbo,
             "_pred": {
-                "X_test": task_data.X_test.cpu(),
-                "y_test": task_data.y_test.cpu(),
-                "mean": mean.cpu(),
-                "var": (var if var.dim() > 0 else var.unsqueeze(0)).cpu(),
+                "X_grid": X_grid.cpu(),
+                "mean_grid": grid_mean.cpu(),
+                "var_grid": grid_var.cpu(),
+                "X_train_all": torch.cat(all_X_train),
+                "y_train_all": torch.cat(all_y_train),
+                "X_train_current": task_data.X_train.cpu(),
+                "y_train_current": task_data.y_train.cpu(),
+                "X_test_all": torch.cat(all_X_test),
+                "y_test_all": torch.cat(all_y_test),
+                "X_test_current": task_data.X_test.cpu(),
+                "y_test_current": task_data.y_test.cpu(),
             },
         })
         training_logs.append({"task_id": task_id, "history": history})
@@ -352,20 +385,67 @@ def run_single(config):
 # ---------------------------------------------------------------------------
 
 def _fit_exact_gp_hparams(dataset, device, base_cfg):
+    """Fit ExactGP kernel hyperparameters on task 1.
+
+    Uses data-driven heuristic initialization (median pairwise distance
+    for lengthscale, data std for signal variance) to avoid both the
+    overly-smooth and overfitting local optima common with small N.
+    """
     exact_cfg = base_cfg.get("exact_gp", {})
     if not exact_cfg:
         return None
+
     task1 = next(dataset.tasks())
+    num_epochs = exact_cfg.get("num_epochs", 500)
+    lr = exact_cfg.get("lr", 0.05)
+
     kernel = build_kernel(base_cfg["kernel"], device)
     model = ExactGP(kernel=kernel, device=device)
-    print("Fitting ExactGP hyperparameters on task 1...")
+
+    # Initialization: use config values if provided, else data-driven heuristic
+    with torch.no_grad():
+        if "init_log_ls" in exact_cfg:
+            kernel.log_ls.fill_(exact_cfg["init_log_ls"])
+        else:
+            dists = torch.cdist(task1.X_train, task1.X_train)
+            median_dist = dists[dists > 0].median()
+            kernel.log_ls.fill_(torch.log(median_dist).item())
+
+        if "init_log_sf" in exact_cfg:
+            kernel.log_sf.fill_(exact_cfg["init_log_sf"])
+        else:
+            kernel.log_sf.fill_(torch.log(task1.y_train.std()).item())
+
+        if "init_log_noise" in exact_cfg:
+            model.likelihood.log_variance.fill_(exact_cfg["init_log_noise"])
+        else:
+            model.likelihood.log_variance.fill_(
+                torch.log(task1.y_train.var() * 0.1).item()
+            )
+
+    print(f"Fitting ExactGP on task 1 ({num_epochs} epochs)...")
+    print(f"  init: log_ls={kernel.log_ls.data.cpu().numpy()}, "
+          f"log_sf={kernel.log_sf.item():.4f}, "
+          f"log_noise={model.likelihood.log_variance.item():.4f}")
+
     model.fit(
         task1.X_train, task1.y_train,
-        num_epochs=exact_cfg.get("num_epochs", 500),
-        lr=exact_cfg.get("lr", 0.05),
+        num_epochs=num_epochs, lr=lr,
         verbose=True, log_every=exact_cfg.get("log_every", 100),
     )
-    return model.kernel
+
+    fitted_log_noise = model.likelihood.log_variance.detach().clone()
+    # Clip noise from below (following HarrisonZhu's HIPPOSVGP repo)
+    min_log_noise = exact_cfg.get("min_log_noise", None)
+    if min_log_noise is not None and fitted_log_noise.item() < min_log_noise:
+        print(f"  clipping log_noise: {fitted_log_noise.item():.4f} -> {min_log_noise}")
+        fitted_log_noise.fill_(min_log_noise)
+    final_nll = model.nll().item()
+    print(f"  final: NLL={final_nll:.4f}, "
+          f"log_ls={kernel.log_ls.data.cpu().numpy()}, "
+          f"log_sf={kernel.log_sf.item():.4f}, "
+          f"log_noise={model.likelihood.log_variance.item():.4f}")
+    return model.kernel, fitted_log_noise
 
 
 def _save_strategy_outputs(strat_dir, task_metrics, training_logs):
@@ -419,7 +499,11 @@ def run_compare(config):
     print(f"Output: {output_dir}")
 
     dataset = build_dataset(config["dataset"], device)
-    fitted_kernel = _fit_exact_gp_hparams(dataset, device, base_cfg)
+    fit_result = _fit_exact_gp_hparams(dataset, device, base_cfg)
+    if fit_result is not None:
+        fitted_kernel, fitted_log_noise = fit_result
+    else:
+        fitted_kernel, fitted_log_noise = None, None
 
     # Phase origin
     task1 = next(dataset.tasks())
@@ -446,7 +530,8 @@ def run_compare(config):
 
         task_metrics, training_logs = run_strategy(
             config["dataset"], device, merged_cfg, train_cfg, base_cfg["kernel"],
-            fitted_kernel=fitted_kernel, spectral_sample=spectral_sample,
+            fitted_kernel=fitted_kernel, fitted_log_noise=fitted_log_noise,
+            spectral_sample=spectral_sample,
             phase_origin=phase_origin, seed=seed,
         )
 
