@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from hipposvgp.kernels.base import Kernel
+from hipposvgp.rff import SpectralSample
 
 
 class SquaredExponential(Kernel):
@@ -48,6 +49,11 @@ class SquaredExponential(Kernel):
             )
 
     def sample_from_spectral(self, num_rff):
-        return (1.0 / torch.exp(self.log_ls)) * torch.randn(
+        w = (1.0 / torch.exp(self.log_ls)) * torch.randn(
             num_rff, device=self.device
         )
+        scale = torch.full(
+            (num_rff,), (1.0 / num_rff) ** 0.5,
+            dtype=torch.float64, device=self.device,
+        )
+        return SpectralSample(frequencies=w.unsqueeze(0), scale=scale)

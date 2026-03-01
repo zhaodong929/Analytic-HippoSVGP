@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from hipposvgp.kernels.base import Kernel
+from hipposvgp.rff import SpectralSample
 
 
 class SpectralMixture(Kernel):
@@ -70,9 +71,14 @@ class SpectralMixture(Kernel):
             )
 
     def sample_from_spectral(self, num_rff):
-        S = self.mu_smk.view(self.num_mixture, 1) + torch.sqrt(
+        weights = torch.softmax(self.w_smk_raw, 0)  # [num_mixture]
+        S = self.mu_smk.view(-1, 1) + torch.sqrt(
             torch.exp(self.log_var_smk)
-        ).view(self.num_mixture, 1) * torch.randn(
+        ).view(-1, 1) * torch.randn(
             self.num_mixture, num_rff, device=self.device
         )
-        return S, torch.softmax(self.w_smk_raw, 0)
+        S_flat = S.reshape(-1)  # [num_mixture * num_rff]
+        scale = torch.sqrt(
+            weights.repeat_interleave(num_rff) / num_rff
+        )
+        return SpectralSample(frequencies=S_flat.unsqueeze(0), scale=scale)

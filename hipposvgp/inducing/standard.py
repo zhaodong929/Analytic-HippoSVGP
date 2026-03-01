@@ -22,7 +22,7 @@ class StandardInducing(InducingStrategy):
         )
 
     def compute_kernel_matrices(
-        self, kernel, X, *, Z_old=None, Kaa_old=None, flag_update_kernel=True, w=None
+        self, kernel, X, *, Z_old=None, Kaa_old=None, flag_update_kernel=True, sample=None
     ):
         Kuu = kernel(self.Z, self.Z)
         Kfu = kernel(X, self.Z)
@@ -44,9 +44,9 @@ class StandardInducing(InducingStrategy):
             Kold_old=Kold_old,
             Kold_old_newk=Kold_old_newk,
             Z=self.Z,
-        ), None  # no w for standard inducing
+        ), None  # no sample for standard inducing
 
-    def compute_prediction_matrices(self, kernel, Xnew, w=None):
+    def compute_prediction_matrices(self, kernel, Xnew, sample=None):
         Kuu = kernel(self.Z, self.Z)
         Kfu_new = kernel(Xnew, self.Z)
         Kff_new = kernel(Xnew, Xnew)

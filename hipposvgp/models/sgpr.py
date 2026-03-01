@@ -2,7 +2,7 @@
 
 Separate from OnlineSVGP because SGPR uses a collapsed ELBO
 (no explicit variational parameters mv, Lv) with Woodbury-based formulas.
-Gaussian likelihood only — noise variance is a learned parameter.
+Gaussian likelihood only -- noise variance is a learned parameter.
 """
 
 import math
@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 
 from hipposvgp.linalg import add_jitter
+from hipposvgp.rff import SpectralSample
 
 
 @dataclass
@@ -60,6 +61,7 @@ class OnlineSGPR(nn.Module):
         X: [N, D] training inputs
         y: [N, 1] training targets
         prior_state: SGPRPosteriorState from previous task (None for first task)
+        spectral_sample: fixed SpectralSample (None to sample from kernel)
     """
 
     def __init__(
@@ -78,13 +80,7 @@ class OnlineSGPR(nn.Module):
         self.dtype = dtype
         self.kernel = kernel
         self.inducing_strategy = inducing_strategy
-        self.spectral_sample = (
-            torch.as_tensor(spectral_sample, dtype=dtype, device=device)
-            if spectral_sample is not None
-            else None
-        )
-        if self.spectral_sample is not None and self.spectral_sample.dim() == 1:
-            self.spectral_sample = self.spectral_sample.unsqueeze(0)
+        self.spectral_sample = spectral_sample
 
         self.X = torch.as_tensor(X, dtype=dtype, device=device)
         self.y = torch.as_tensor(y, dtype=dtype, device=device)
@@ -110,7 +106,7 @@ class OnlineSGPR(nn.Module):
             self.Z_old = None
 
         self._cached_km = None
-        self._cached_w = None
+        self._cached_sample = None
 
     @property
     def _has_prior(self):
@@ -120,7 +116,7 @@ class OnlineSGPR(nn.Module):
     def _add_jitter(self, K):
         return add_jitter(K, jitter=self.jitter)
 
-    def _common_terms(self, w=None):
+    def _common_terms(self, sample=None):
         """Compute intermediate terms shared by ELBO, prediction, and qb_opt.
 
         Handles both first task (no prior) and online tasks (with prior).
@@ -131,24 +127,24 @@ class OnlineSGPR(nn.Module):
         sigma = torch.sqrt(sigma2)
 
         # Compute kernel matrices via inducing strategy
-        spectral_sample = self.spectral_sample if w is None else w
-        km, w = self.inducing_strategy.compute_kernel_matrices(
+        effective_sample = self.spectral_sample if sample is None else sample
+        km, resolved_sample = self.inducing_strategy.compute_kernel_matrices(
             self.kernel,
             self.X,
             Z_old=self.Z_old if self._has_prior else None,
             Kaa_old=self.Kaa_old if self._has_prior else None,
             flag_update_kernel=True,
-            w=spectral_sample,
+            sample=effective_sample,
         )
         self._cached_km = km
-        self._cached_w = w
+        self._cached_sample = resolved_sample
 
         Kff = km.Kff
         Kfb = km.Kfu
         Kbf = Kfb.T
         Kbb = self._add_jitter(km.Kuu)
 
-        # Data term: c = Kbf y / σ²
+        # Data term: c = Kbf y / sigma^2
         Sinv_y = self.y / sigma2
         c = Kbf @ Sinv_y
 
@@ -229,7 +225,7 @@ class OnlineSGPR(nn.Module):
         bound += 0.5 * torch.sum(t.LDinv_Lbinv_c.pow(2))
         bound -= 0.5 * N * torch.sum(torch.log(sigma2))
         bound -= torch.sum(torch.log(torch.diag(t.LD)))
-        # Trace correction: -1/(2σ²) tr(Kff - Qff)
+        # Trace correction: -1/(2sigma^2) tr(Kff - Qff)
         bound -= 0.5 * torch.sum(Kfdiag) / sigma2
         bound += 0.5 * torch.sum(torch.diag(t.Qff))
 
@@ -256,12 +252,12 @@ class OnlineSGPR(nn.Module):
 
         return bound
 
-    def predict(self, Xnew, w=None, full_cov=False, include_noise=True):
+    def predict(self, Xnew, sample=None, full_cov=False, include_noise=True):
         """Compute predictive mean and variance at new points.
 
         Args:
             Xnew: [N*, D] test inputs
-            w: RFF frequencies (None to use cached from last _common_terms call)
+            sample: SpectralSample (None to use cached from last _common_terms call)
             full_cov: if True, return full covariance matrix
             include_noise: if True, add observation noise to variance
 
@@ -269,14 +265,13 @@ class OnlineSGPR(nn.Module):
             mean: [N*, 1] predictive mean
             var: [N*] or [N*, N*] predictive variance
         """
-        spectral_sample = self.spectral_sample if w is None else w
-        t = self._common_terms(w=spectral_sample)
+        effective_sample = self.spectral_sample if sample is None else sample
+        t = self._common_terms(sample=effective_sample)
 
-        if w is None:
-            w = self._cached_w
+        resolved_sample = self._cached_sample
 
         Kuu, Kfu_new, Kff_new = self.inducing_strategy.compute_prediction_matrices(
-            self.kernel, Xnew, w=w
+            self.kernel, Xnew, sample=resolved_sample
         )
         Kbs = Kfu_new.T
 

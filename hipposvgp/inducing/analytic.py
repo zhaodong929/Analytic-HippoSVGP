@@ -103,28 +103,18 @@ class AnalyticHiPPOInducing(RFFInducingBase):
 
         return j
 
-    def _get_rff_scale(self, kernel, num_rff):
-        """Get RFF scaling: sqrt(gamma) for FreqSpaceKernel, (1/R)^0.5 otherwise."""
-        weights = kernel.get_weights()
-        if weights is not None:
-            return torch.sqrt(weights)
-        return (1.0 / num_rff) ** 0.5
-
-    def _compute_Z_at_t(self, w_eff, t_index, phase_start, kernel, num_rff):
+    def _compute_Z_at_t(self, w_eff, t_index, phase_start, scale):
         """Compute Z matrix at a single time index using analytic formula.
 
         Args:
             w_eff: [1, R] effective frequencies (w * step_size)
             t_index: scalar time index
             phase_start: [1, R] phase offset
-            kernel: kernel module (for get_weights)
-            num_rff: number of RFF components
+            scale: [R] tensor or scalar RFF scale
 
         Returns:
             Z: [2R, M] feature matrix
         """
-        scale = self._get_rff_scale(kernel, num_rff)
-
         kappa = 0.5 * w_eff * t_index  # [1, R]
         L = torch.arange(self.inducing_size, dtype=self.dtype, device=self.device)
 
@@ -154,15 +144,17 @@ class AnalyticHiPPOInducing(RFFInducingBase):
 
         return Z
 
-    def _compute_Z(self, w, kernel=None, Z_old=None, flag_update_kernel=True):
+    def _compute_Z(self, sample, Z_old=None, flag_update_kernel=True):
         """Compute Z matrix analytically.
 
         Returns:
             (Z, Z_old_newk): current Z [2R, M] and old Z [2R, M] or None
         """
+        w = sample.frequencies
+        scale = sample.scale
+
         step_size = self.maxT / self.num_discrete_steps
         w_eff = w * step_size
-        num_rff = w.shape[-1]
 
         phase_origin = torch.as_tensor(
             self.phase_origin, dtype=self.dtype, device=self.device
@@ -174,7 +166,7 @@ class AnalyticHiPPOInducing(RFFInducingBase):
             dtype=self.dtype,
             device=self.device,
         )
-        Z = self._compute_Z_at_t(w_eff, t_index, phase_start, kernel, num_rff)
+        Z = self._compute_Z_at_t(w_eff, t_index, phase_start, scale)
 
         Z_old_newk = None
         if self.prev_discrete_steps > 0:
@@ -184,13 +176,11 @@ class AnalyticHiPPOInducing(RFFInducingBase):
                 device=self.device,
             )
             Z_old_newk = self._compute_Z_at_t(
-                w_eff, t_index_old, phase_start, kernel, num_rff
+                w_eff, t_index_old, phase_start, scale
             )
 
         return Z, Z_old_newk
 
-    def _compute_Z_f(self, w, X, kernel=None):
-        """Compute RFF features for data points (supports weighting)."""
-        num_rff = w.shape[-1]
-        scale = self._get_rff_scale(kernel, num_rff)
-        return rff_features(w, X, scale=scale)
+    def _compute_Z_f(self, sample, X):
+        """Compute RFF features for data points."""
+        return rff_features(sample, X)

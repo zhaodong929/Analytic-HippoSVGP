@@ -7,6 +7,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from hipposvgp.rff import SpectralSample
+
 
 @dataclass
 class KernelMatrices:
@@ -51,7 +53,7 @@ class InducingStrategy(nn.Module, ABC):
         Z_old=None,
         Kaa_old=None,
         flag_update_kernel=True,
-        w=None,
+        sample=None,
     ):
         """Compute all kernel matrices for the ELBO.
 
@@ -61,20 +63,20 @@ class InducingStrategy(nn.Module, ABC):
             Z_old: [2R, M'] previous Z feature matrix (or None)
             Kaa_old: [M', M'] previous Kuu matrix (or None)
             flag_update_kernel: if True, recompute Z from scratch
-            w: optional fixed spectral sample (for RFF-based strategies)
+            sample: optional fixed SpectralSample (for RFF-based strategies)
 
         Returns:
-            KernelMatrices dataclass
+            (KernelMatrices, SpectralSample) tuple
         """
 
     @abstractmethod
-    def compute_prediction_matrices(self, kernel, Xnew, w=None):
+    def compute_prediction_matrices(self, kernel, Xnew, sample=None):
         """Compute kernel matrices for prediction.
 
         Args:
             kernel: Kernel module
             Xnew: [N*, D] test data
-            w: optional fixed spectral sample (for RFF-based strategies)
+            sample: optional fixed SpectralSample (for RFF-based strategies)
 
         Returns:
             (Kuu, Kfu_new, Kff_new) tuple
@@ -126,24 +128,14 @@ class RFFInducingBase(InducingStrategy, ABC):
             )
         ).unsqueeze(1)
 
-    def _resolve_spectral_sample(self, kernel, w):
-        """Resolve spectral sample: use provided w, or sample from kernel."""
-        if w is None:
-            w = kernel.sample_from_spectral(self.rff_sample_size)
-            if isinstance(w, tuple):
-                raise TypeError(
-                    "SpectralMixture kernel returns (S, weights) from sample_from_spectral, "
-                    "which is not supported by RFF inducing strategies. "
-                    "Use SE or FreqSpace kernel."
-                )
-        else:
-            w = torch.as_tensor(w, dtype=self.dtype, device=self.device)
-        if w.dim() == 1:
-            w = w.unsqueeze(0)
-        return w
+    def _resolve_spectral_sample(self, kernel, sample):
+        """Resolve spectral sample: use provided sample, or sample from kernel."""
+        if sample is None:
+            return kernel.sample_from_spectral(self.rff_sample_size)
+        return sample
 
     @abstractmethod
-    def _compute_Z(self, w, kernel=None, Z_old=None, flag_update_kernel=True):
+    def _compute_Z(self, sample, Z_old=None, flag_update_kernel=True):
         """Compute Z matrix from spectral sample.
 
         Returns:
@@ -151,7 +143,7 @@ class RFFInducingBase(InducingStrategy, ABC):
         """
 
     @abstractmethod
-    def _compute_Z_f(self, w, X, kernel=None):
+    def _compute_Z_f(self, sample, X):
         """Compute RFF features for data points.
 
         Returns:
@@ -201,23 +193,23 @@ class RFFInducingBase(InducingStrategy, ABC):
         Z_old=None,
         Kaa_old=None,
         flag_update_kernel=True,
-        w=None,
+        sample=None,
     ):
-        w = self._resolve_spectral_sample(kernel, w)
+        sample = self._resolve_spectral_sample(kernel, sample)
         Z, Z_old_newk = self._compute_Z(
-            w, kernel=kernel, Z_old=Z_old, flag_update_kernel=flag_update_kernel
+            sample, Z_old=Z_old, flag_update_kernel=flag_update_kernel
         )
-        Z_f = self._compute_Z_f(w, X, kernel=kernel)
+        Z_f = self._compute_Z_f(sample, X)
         sf = torch.exp(kernel.log_sf)
         km = self._assemble_kernel_matrices(
             sf, Z, Z_f, Z_old_newk, Z_old, Kaa_old, flag_update_kernel
         )
-        return km, w
+        return km, sample
 
-    def compute_prediction_matrices(self, kernel, Xnew, w=None):
-        w = self._resolve_spectral_sample(kernel, w)
-        Z, _ = self._compute_Z(w, kernel=kernel)
-        Z_f = self._compute_Z_f(w, Xnew, kernel=kernel)
+    def compute_prediction_matrices(self, kernel, Xnew, sample=None):
+        sample = self._resolve_spectral_sample(kernel, sample)
+        Z, _ = self._compute_Z(sample)
+        Z_f = self._compute_Z_f(sample, Xnew)
         sf = torch.exp(kernel.log_sf)
         Kuu = sf * (Z.T @ Z)
         Kfu_new = sf * (Z_f @ Z)

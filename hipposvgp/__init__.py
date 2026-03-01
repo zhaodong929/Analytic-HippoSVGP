@@ -1,5 +1,6 @@
 """HiPPO-SVGP: Online Sparse Variational GP with HiPPO Inducing Features."""
 
+from hipposvgp.rff import SpectralSample
 from hipposvgp.models import (
     OnlineSVGP,
     PosteriorState,
@@ -21,6 +22,7 @@ from hipposvgp.inducing import (
 from hipposvgp.hippo import HiPPO_LegS
 
 __all__ = [
+    "SpectralSample",
     "OnlineSVGP",
     "PosteriorState",
     "OnlineSGPR",

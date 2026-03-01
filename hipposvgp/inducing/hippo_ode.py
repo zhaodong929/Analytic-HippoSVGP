@@ -32,12 +32,13 @@ class HiPPOInducing(RFFInducingBase):
         self.hippo = hippo
         self.flag_fast = flag_fast
 
-    def _make_h(self, w, time_stamps):
+    def _make_h(self, sample, time_stamps):
         """RFF features at given timestamps for ODE input."""
-        rff_sample_size = w.shape[-1]
-        return (1.0 / rff_sample_size) ** 0.5 * torch.cat(
-            [torch.sin(w * time_stamps), torch.cos(w * time_stamps)], 1
-        )
+        w = sample.frequencies
+        scale = sample.scale
+        sin_term = torch.sin(w * time_stamps)
+        cos_term = torch.cos(w * time_stamps)
+        return torch.cat([scale * sin_term, scale * cos_term], 1)
 
     def _get_full_time_stamps(self):
         """Generate timestamps covering full history (prev + current steps)."""
@@ -49,16 +50,16 @@ class HiPPOInducing(RFFInducingBase):
             + torch.arange(total_steps, dtype=self.dtype, device=self.device)
         ).unsqueeze(1)
 
-    def _compute_Z(self, w, kernel=None, Z_old=None, flag_update_kernel=True):
+    def _compute_Z(self, sample, Z_old=None, flag_update_kernel=True):
         """Compute Z via HiPPO ODE scan.
 
         Returns:
             (Z, Z_old_newk): current Z and old Z re-evaluated with new kernel
         """
         if not flag_update_kernel and Z_old is not None:
-            # Continue from Z_old — only need current task's timestamps
+            # Continue from Z_old -- only need current task's timestamps
             time_stamps = self._get_time_stamps()
-            h = self._make_h(w, time_stamps)
+            h = self._make_h(sample, time_stamps)
             Z = self.hippo(
                 h,
                 ini=Z_old,
@@ -67,18 +68,18 @@ class HiPPOInducing(RFFInducingBase):
             )[-1]
             Z_old_newk = None
         elif self.prev_discrete_steps > 0:
-            # Full re-scan from scratch — need ALL timestamps (prev + current)
+            # Full re-scan from scratch -- need ALL timestamps (prev + current)
             full_time_stamps = self._get_full_time_stamps()
-            h = self._make_h(w, full_time_stamps)
+            h = self._make_h(sample, full_time_stamps)
             res = self.hippo(
                 h, ini=None, prev_discrete_steps=0, fast=self.flag_fast
             )
             Z = res[-1]
             Z_old_newk = res[self.prev_discrete_steps - 1]
         else:
-            # First task — only current timestamps
+            # First task -- only current timestamps
             time_stamps = self._get_time_stamps()
-            h = self._make_h(w, time_stamps)
+            h = self._make_h(sample, time_stamps)
             res = self.hippo(
                 h, ini=None, prev_discrete_steps=0, fast=self.flag_fast
             )
@@ -86,6 +87,6 @@ class HiPPOInducing(RFFInducingBase):
             Z_old_newk = None
         return Z, Z_old_newk
 
-    def _compute_Z_f(self, w, X, kernel=None):
+    def _compute_Z_f(self, sample, X):
         """Compute RFF features for data points."""
-        return rff_features(w, X)
+        return rff_features(sample, X)

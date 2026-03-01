@@ -96,7 +96,7 @@ class OnlineSVGP(nn.Module):
 
         # Kernel matrix cache
         self._cached_km = None
-        self._cached_w = None
+        self._cached_sample = None
 
     @property
     def _has_prior(self):
@@ -218,13 +218,13 @@ class OnlineSVGP(nn.Module):
 
         return obj
 
-    def elbo(self, X, y, w=None, recompute_k=True, cache_k=False, beta=1.0):
+    def elbo(self, X, y, sample=None, recompute_k=True, cache_k=False, beta=1.0):
         """Compute the evidence lower bound.
 
         Args:
             X: [N, D] training inputs
             y: [N, 1] training targets
-            w: pre-sampled RFF frequencies (None to sample)
+            sample: pre-sampled SpectralSample (None to sample)
             recompute_k: whether to recompute kernel matrices
             cache_k: whether to cache kernel matrices
             beta: scaling for KL term (for tempering)
@@ -234,19 +234,20 @@ class OnlineSVGP(nn.Module):
         """
         # 1. Compute or retrieve kernel matrices
         if recompute_k:
-            km, w = self.inducing_strategy.compute_kernel_matrices(
+            km, sample = self.inducing_strategy.compute_kernel_matrices(
                 self.kernel,
                 X,
                 Z_old=self.Z_old,
                 Kaa_old=self.Kaa_old,
                 flag_update_kernel=self.flag_update_kernel,
+                sample=sample,
             )
             # Always cache the latest km for get_posterior_state()
             self._cached_km = km
-            self._cached_w = w
+            self._cached_sample = sample
         else:
             km = self._cached_km
-            w = self._cached_w
+            sample = self._cached_sample
 
         # 2. Cholesky of Kuu
         L_Kuu = self._cholesky(km.Kuu)
@@ -277,12 +278,12 @@ class OnlineSVGP(nn.Module):
 
         return elbo, ve_mean, kl
 
-    def predict(self, Xnew, w=None, full_cov=False, include_noise=False):
+    def predict(self, Xnew, sample=None, full_cov=False, include_noise=False):
         """Compute predictive mean and variance.
 
         Args:
             Xnew: [N*, D] test inputs
-            w: pre-sampled RFF frequencies (None to sample)
+            sample: pre-sampled SpectralSample (None to sample)
             full_cov: if True, return full covariance matrix
             include_noise: if True, add observation noise to variance
 
@@ -291,7 +292,7 @@ class OnlineSVGP(nn.Module):
             var: [N*, 1] or [N*, N*] predictive variance
         """
         Kuu, Kfu_new, Kff_new = self.inducing_strategy.compute_prediction_matrices(
-            self.kernel, Xnew, w=w
+            self.kernel, Xnew, sample=sample
         )
         Luu = self._cholesky(Kuu)
 

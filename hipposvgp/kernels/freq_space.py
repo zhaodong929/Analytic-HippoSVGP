@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 
 from hipposvgp.kernels.base import Kernel
+from hipposvgp.rff import SpectralSample
 
 
 class FrequencySpace(Kernel):
@@ -38,13 +39,12 @@ class FrequencySpace(Kernel):
         """Normalized spectral weights (sum to 1)."""
         return torch.softmax(self.log_gamma_raw, dim=0)
 
-    def get_weights(self):
-        """Return normalized weights (used by AnalyticHiPPOInducing)."""
-        return self.gamma
-
     def sample_from_spectral(self, num_rff=None):
-        """Return learned omega (no sampling needed)."""
-        return self.omega
+        """Return learned frequencies and weights as SpectralSample."""
+        return SpectralSample(
+            frequencies=self.omega.unsqueeze(0),
+            scale=torch.sqrt(self.gamma),
+        )
 
     def forward(self, X1, X2=None, diag=False):
         if X2 is None:

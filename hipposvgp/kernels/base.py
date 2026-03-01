@@ -10,6 +10,7 @@ class Kernel(nn.Module, ABC):
     """Base class for all kernels.
 
     Subclasses must implement ``forward`` and ``sample_from_spectral``.
+    ``sample_from_spectral`` returns a ``SpectralSample`` dataclass.
     """
 
     def __init__(self):
@@ -38,10 +39,6 @@ class Kernel(nn.Module, ABC):
             Kernel matrix [N, M] or diagonal [N].
         """
 
-    def get_weights(self):
-        """RFF component weights. Override for weighted kernels (e.g., FreqSpace)."""
-        return None
-
     @abstractmethod
     def sample_from_spectral(self, num_rff):
         """Sample from the spectral density of this kernel.
@@ -50,5 +47,5 @@ class Kernel(nn.Module, ABC):
             num_rff: number of random Fourier features
 
         Returns:
-            Frequency samples tensor.
+            SpectralSample with frequencies and scale.
         """
