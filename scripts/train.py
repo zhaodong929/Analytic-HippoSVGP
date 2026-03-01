@@ -1,7 +1,7 @@
 """Unified training script for online sparse GP models.
 
-Supports both SVGP (variational) and SGPR (collapsed bound) model types.
-Supports single-strategy mode (default) and compare mode (multiple strategies).
+Supports SVGP (variational) and SGPR (collapsed bound) model types,
+in single-strategy mode or compare mode (multiple strategies from one YAML).
 
 Usage:
     python -m scripts.train scripts/configs/covid_analytic.yaml
@@ -13,10 +13,7 @@ import csv
 import json
 import os
 import time
-import warnings
 from copy import deepcopy
-from dataclasses import dataclass, field
-from typing import Optional
 
 import torch
 import yaml
@@ -88,7 +85,7 @@ def build_dataset(cfg, device):
 
 
 def build_inducing_strategy(
-    cfg, device, hippo, start, end, num_steps, prev_steps, *, phase_origin=0.0
+    cfg, device, hippo, start, end, num_steps, prev_steps, *, phase_origin=0.0,
 ):
     strategy = cfg["inducing_strategy"]
     M = cfg["inducing_size"]
@@ -109,8 +106,17 @@ def build_inducing_strategy(
         raise ValueError(f"Unknown inducing strategy: {strategy}")
 
 
+def _draw_spectral_sample(kernel, R):
+    """Draw and detach a spectral sample from a kernel."""
+    s = kernel.sample_from_spectral(R)
+    return SpectralSample(
+        frequencies=s.frequencies.detach().clone(),
+        scale=s.scale.detach().clone(),
+    )
+
+
 # ---------------------------------------------------------------------------
-# Model build + train (single entry point for both SGPR and SVGP)
+# Build model + train
 # ---------------------------------------------------------------------------
 
 def _build_and_train(
@@ -194,131 +200,81 @@ def evaluate_task(model, task_data, device, *, model_type):
 
 
 # ---------------------------------------------------------------------------
-# Kernel lifecycle: init → learn on task 1 → freeze for task 2+
+# Strategy runner
 # ---------------------------------------------------------------------------
-
-class KernelManager:
-    """Manage kernel construction, learning, and freezing across tasks."""
-
-    def __init__(self, kernel_cfg, device, train_cfg, fitted_kernel=None):
-        self._kernel_cfg = kernel_cfg
-        self._device = device
-        self._fix_after_task1 = train_cfg.get("fix_kernel_after_task1", False)
-        self._fitted_kernel = fitted_kernel
-        self._learned_kernel = None
-
-    def get_kernel(self, task_id):
-        """Return an appropriately initialized kernel for this task."""
-        if self._fitted_kernel is not None:
-            kernel = deepcopy(self._fitted_kernel)
-        elif task_id == 1:
-            kernel = build_kernel(self._kernel_cfg, self._device)
-        else:
-            kernel = deepcopy(self._learned_kernel)
-
-        if task_id > 1 and self._fix_after_task1:
-            for p in kernel.parameters():
-                p.requires_grad_(False)
-
-        return kernel
-
-    def after_task(self, task_id, model):
-        """Save the learned kernel from task 1 when no ExactGP pre-fitting."""
-        if task_id == 1 and self._fitted_kernel is None:
-            self._learned_kernel = deepcopy(model.kernel)
-
-
-# ---------------------------------------------------------------------------
-# Shared spectral sample lifecycle
-# ---------------------------------------------------------------------------
-
-class SpectralSampleManager:
-    """Manage spectral sample: immediate (ExactGP fitted) or deferred (task 1)."""
-
-    def __init__(self, rff_sample_size, fitted_kernel=None, enabled=True):
-        self._rff_sample_size = rff_sample_size
-        self._enabled = enabled
-        self.sample = None
-
-        if enabled and fitted_kernel is not None:
-            self.sample = self._draw(fitted_kernel)
-
-    def maybe_create_after_task1(self, kernel_manager):
-        """Create deferred sample from task 1 learned kernel."""
-        if self._enabled and self.sample is None and kernel_manager._learned_kernel is not None:
-            self.sample = self._draw(kernel_manager._learned_kernel)
-
-    def _draw(self, kernel):
-        s = kernel.sample_from_spectral(self._rff_sample_size)
-        return SpectralSample(
-            frequencies=s.frequencies.detach().clone(),
-            scale=s.scale.detach().clone(),
-        )
-
-    def save(self, path):
-        if self.sample is not None:
-            torch.save(self.sample, path)
-
-
-# ---------------------------------------------------------------------------
-# Strategy runner (shared by single and compare modes)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class StrategyResult:
-    task_metrics: list = field(default_factory=list)
-    training_logs: list = field(default_factory=list)
-
 
 def run_strategy(
-    dataset_cfg, device, model_cfg, train_cfg, kernel_manager,
-    spectral_manager, phase_origin, seed,
+    dataset_cfg, device, model_cfg, train_cfg, kernel_cfg,
+    *, fitted_kernel=None, spectral_sample=None, phase_origin=0.0, seed=0,
 ):
-    """Run one inducing strategy across all tasks. Returns StrategyResult."""
+    """Run one inducing strategy across all tasks.
+
+    Args:
+        fitted_kernel: Pre-fitted kernel (from ExactGP). Deepcopied per task.
+        spectral_sample: Fixed spectral sample shared across tasks (or None).
+        phase_origin: Phase origin for analytic inducing.
+        seed: Random seed.
+
+    Returns:
+        (task_metrics, training_logs) — lists of dicts.
+    """
     seed_everything(seed)
 
     model_type = model_cfg.get("model_type", "svgp")
-    inducing_size = model_cfg["inducing_size"]
+    fix_kernel = train_cfg.get("fix_kernel_after_task1", False)
     step_size = model_cfg["step_size"]
 
     hippo = None
     if model_cfg["inducing_strategy"] == "hippo_ode":
-        hippo = HiPPO_LegS(inducing_size, device)
+        hippo = HiPPO_LegS(model_cfg["inducing_size"], device)
 
     dataset = build_dataset(dataset_cfg, device)
-    result = StrategyResult()
+    base_kernel = fitted_kernel  # None until task 1 completes (when no ExactGP)
 
     prior_state = None
     prev_end = None
     prev_steps = 0
     all_test_data = []
+    task_metrics = []
+    training_logs = []
 
     for task_data in dataset.tasks():
         task_id = task_data.task_id
         print(f"\n  --- Task {task_id}  "
-              f"(train={task_data.X_train.shape[0]}, test={task_data.X_test.shape[0]}) ---")
+              f"(train={task_data.X_train.shape[0]}, "
+              f"test={task_data.X_test.shape[0]}) ---")
 
+        # Kernel: fresh for task 1 (no pre-fitting), frozen copy for task 2+
+        if base_kernel is not None:
+            kernel = deepcopy(base_kernel)
+            if task_id > 1 and fix_kernel:
+                for p in kernel.parameters():
+                    p.requires_grad_(False)
+        else:
+            kernel = build_kernel(kernel_cfg, device)
+
+        # Time window + inducing
         start, end, num_steps = compute_time_window(
             task_data.X_train, step_size, prev_end,
         )
-        kernel = kernel_manager.get_kernel(task_id)
         inducing = build_inducing_strategy(
             model_cfg, device, hippo, start, end, num_steps, prev_steps,
             phase_origin=phase_origin,
         )
 
+        # Train
         t0 = time.time()
         model, history = _build_and_train(
             model_type, kernel, task_data, inducing, device,
-            prior_state, spectral_manager.sample, model_cfg, train_cfg, task_id,
+            prior_state, spectral_sample, model_cfg, train_cfg, task_id,
         )
         wall_time = time.time() - t0
 
-        kernel_manager.after_task(task_id, model)
-        if task_id == 1:
-            spectral_manager.maybe_create_after_task1(kernel_manager)
+        # Save learned kernel after task 1 (when no ExactGP pre-fitting)
+        if task_id == 1 and fitted_kernel is None:
+            base_kernel = deepcopy(model.kernel)
 
-        # Evaluate
+        # Evaluate on all seen test sets
         all_test_data.append(task_data)
         for td in all_test_data:
             metrics = evaluate_task(model, td, device, model_type=model_type)
@@ -328,14 +284,7 @@ def run_strategy(
                 f"NLPD={metrics['nlpd']:.4f}  ECE={metrics['ece']:.4f}"
             )
 
-        final_elbo = history[-1]["elbo"] if history else float("nan")
-        result.task_metrics.append({
-            **metrics, "task_id": task_id,
-            "wall_time": wall_time, "final_elbo": final_elbo,
-        })
-        result.training_logs.append({"task_id": task_id, "history": history})
-
-        # Attach prediction tensors for saving
+        # Save predictions
         model.eval()
         with torch.no_grad():
             if model_type == "sgpr":
@@ -344,18 +293,25 @@ def run_strategy(
                 )
             else:
                 mean, var = model.predict(task_data.X_test)
-        result.task_metrics[-1]["_pred"] = {
-            "X_test": task_data.X_test.cpu(),
-            "y_test": task_data.y_test.cpu(),
-            "mean": mean.cpu(),
-            "var": (var if var.dim() > 0 else var.unsqueeze(0)).cpu(),
-        }
+
+        final_elbo = history[-1]["elbo"] if history else float("nan")
+        task_metrics.append({
+            **metrics, "task_id": task_id,
+            "wall_time": wall_time, "final_elbo": final_elbo,
+            "_pred": {
+                "X_test": task_data.X_test.cpu(),
+                "y_test": task_data.y_test.cpu(),
+                "mean": mean.cpu(),
+                "var": (var if var.dim() > 0 else var.unsqueeze(0)).cpu(),
+            },
+        })
+        training_logs.append({"task_id": task_id, "history": history})
 
         prior_state = model.get_posterior_state()
         prev_end = end
         prev_steps += num_steps
 
-    return result
+    return task_metrics, training_logs
 
 
 # ---------------------------------------------------------------------------
@@ -365,42 +321,28 @@ def run_strategy(
 def run_single(config):
     seed = config["experiment"].get("seed", 0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     model_cfg = config["model"]
     train_cfg = config["training"]
-    model_type = model_cfg.get("model_type", "svgp")
-
-    if model_type == "svgp" and config.get("likelihood", {}).get("type") == "gaussian":
-        warnings.warn(
-            "Using SVGP with Gaussian likelihood. Consider model_type: 'sgpr'.",
-            stacklevel=2,
-        )
 
     print(f"Device: {device}")
-    print(f"Experiment: {config['experiment']['name']}  ({model_type})")
+    print(f"Experiment: {config['experiment']['name']}")
 
-    # Merge likelihood into model_cfg for _build_and_train
     full_model_cfg = {**model_cfg}
     if "likelihood" in config:
         full_model_cfg["likelihood"] = config["likelihood"]
 
     # Phase origin
-    dataset_tmp = build_dataset(config["dataset"], device)
-    task1 = next(dataset_tmp.tasks())
+    dataset = build_dataset(config["dataset"], device)
+    task1 = next(dataset.tasks())
     phase_origin = (
         torch.min(task1.X_train).item()
         if model_cfg.get("inducing_strategy") == "analytic_hippo"
         else model_cfg.get("phase_origin", 0.0)
     )
 
-    km = KernelManager(config["kernel"], device, train_cfg)
-    sm = SpectralSampleManager(
-        model_cfg.get("rff_sample_size", 1000), enabled=False,
-    )
-
     run_strategy(
-        config["dataset"], device, full_model_cfg, train_cfg,
-        km, sm, phase_origin, seed,
+        config["dataset"], device, full_model_cfg, train_cfg, config["kernel"],
+        phase_origin=phase_origin, seed=seed,
     )
     print("\nExperiment complete.")
 
@@ -426,7 +368,7 @@ def _fit_exact_gp_hparams(dataset, device, base_cfg):
     return model.kernel
 
 
-def _save_strategy_outputs(strat_dir, result):
+def _save_strategy_outputs(strat_dir, task_metrics, training_logs):
     """Save metrics.csv, training_log.json, and prediction .pt files."""
     pred_dir = os.path.join(strat_dir, "predictions")
     os.makedirs(pred_dir, exist_ok=True)
@@ -435,24 +377,26 @@ def _save_strategy_outputs(strat_dir, result):
     with open(os.path.join(strat_dir, "metrics.csv"), "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for row in result.task_metrics:
+        for row in task_metrics:
             writer.writerow({k: row[k] for k in fieldnames})
 
     with open(os.path.join(strat_dir, "training_log.json"), "w") as f:
-        json.dump(result.training_logs, f, indent=2)
+        json.dump(training_logs, f, indent=2)
 
-    for m in result.task_metrics:
+    for m in task_metrics:
         pred = m.pop("_pred", None)
         if pred is not None:
             torch.save(pred, os.path.join(pred_dir, f"task{m['task_id']:02d}.pt"))
 
 
 def _write_comparison(output_dir, all_results):
-    fieldnames = ["strategy", "task_id", "rmse", "r2", "nlpd", "ece", "wall_time", "final_elbo"]
+    fieldnames = [
+        "strategy", "task_id", "rmse", "r2", "nlpd", "ece", "wall_time", "final_elbo",
+    ]
     rows = [
         {"strategy": name, **{k: m[k] for k in fieldnames if k != "strategy"}}
-        for name, res in all_results.items()
-        for m in res.task_metrics
+        for name, metrics_list in all_results.items()
+        for m in metrics_list
     ]
     with open(os.path.join(output_dir, "comparison.csv"), "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -468,7 +412,7 @@ def run_compare(config):
 
     base_cfg = config["base"]
     train_cfg = base_cfg.get("training", {})
-    rff_sample_size = base_cfg["rff_sample_size"]
+    R = base_cfg["rff_sample_size"]
 
     print(f"Device: {device}")
     print(f"Experiment: {config['experiment']['name']}")
@@ -481,31 +425,35 @@ def run_compare(config):
     task1 = next(dataset.tasks())
     phase_origin = torch.min(task1.X_train).item()
 
+    # Shared spectral sample: draw once before strategy loop
+    spectral_sample = None
+    if config["experiment"].get("share_spectral_sample", False):
+        seed_everything(seed)
+        source = fitted_kernel or build_kernel(base_cfg["kernel"], device)
+        spectral_sample = _draw_spectral_sample(source, R)
+        torch.save(spectral_sample, os.path.join(output_dir, "spectral_sample.pt"))
+
     all_results = {}
 
     for strat_name, strat_cfg in config["strategies"].items():
-        print(f"\n{'#'*60}")
+        print(f"\n{'#' * 60}")
         print(f"Strategy: {strat_name}")
-        print(f"{'#'*60}")
+        print(f"{'#' * 60}")
 
         merged_cfg = {**base_cfg, **strat_cfg}
         if "likelihood" in base_cfg:
             merged_cfg["likelihood"] = base_cfg["likelihood"]
 
-        km = KernelManager(base_cfg["kernel"], device, train_cfg, fitted_kernel)
-        sm = SpectralSampleManager(
-            rff_sample_size, fitted_kernel,
-            enabled=config["experiment"].get("share_spectral_sample", False),
+        task_metrics, training_logs = run_strategy(
+            config["dataset"], device, merged_cfg, train_cfg, base_cfg["kernel"],
+            fitted_kernel=fitted_kernel, spectral_sample=spectral_sample,
+            phase_origin=phase_origin, seed=seed,
         )
 
-        result = run_strategy(
-            config["dataset"], device, merged_cfg, train_cfg,
-            km, sm, phase_origin, seed,
+        _save_strategy_outputs(
+            os.path.join(output_dir, strat_name), task_metrics, training_logs,
         )
-
-        sm.save(os.path.join(output_dir, "spectral_sample.pt"))
-        _save_strategy_outputs(os.path.join(output_dir, strat_name), result)
-        all_results[strat_name] = result
+        all_results[strat_name] = task_metrics
 
     _write_comparison(output_dir, all_results)
     print(f"\nResults saved to {output_dir}")
