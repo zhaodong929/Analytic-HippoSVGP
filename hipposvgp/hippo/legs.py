@@ -1,87 +1,28 @@
 """
-This file includes code adapted from the HiPPO project (HazyResearch/hippo-code),
-including logic from `model/hippo.py` and `model/op.py`.
+HiPPO-LegS (Legendre Scaled) module for JAX.
 
-Upstream repository: https://github.com/HazyResearch/hippo-code
-Upstream license: Apache License 2.0 (see `THIRD_PARTY_NOTICES.md` and
-https://github.com/HazyResearch/hippo-code/blob/master/LICENSE)
+Adapted from HazyResearch/hippo-code (Apache License 2.0).
+See THIRD_PARTY_NOTICES.md for details.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Uses jax.lax.scan for efficient sequential computation.
 """
 
-import torch
-import torch.nn as nn
-import numpy as np
-from scipy import linalg as la
-from scipy import special as ss
+from __future__ import annotations
+
 import math
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jaxtyping import Array, Float
+from scipy import linalg as la
+from scipy import special as ss
 
-def transition(measure, N, **measure_args):
-    """A, B transition matrices for different measures.
 
-    measure: the type of measure
-      legt - Legendre (translated)
-      legs - Legendre (scaled)
-      glagt - generalized Laguerre (translated)
-      lagt, tlagt - previous versions of (tilted) Laguerre with slightly different normalization
-    """
-    # Laguerre (translated)
-    if measure == "lagt":
-        b = measure_args.get("beta", 1.0)
-        A = np.eye(N) / 2 - np.tril(np.ones((N, N)))
-        B = b * np.ones((N, 1))
-    if measure == "tlagt":
-        # beta = 1 corresponds to no tilt
-        b = measure_args.get("beta", 1.0)
-        A = (1.0 - b) / 2 * np.eye(N) - np.tril(np.ones((N, N)))
-        B = b * np.ones((N, 1))
-    # Generalized Laguerre
-    # alpha 0, beta small is most stable (limits to the 'lagt' measure)
-    # alpha 0, beta 1 has transition matrix A = [lower triangular 1]
-    if measure == "glagt":
-        alpha = measure_args.get("alpha", 0.0)
-        beta = measure_args.get("beta", 0.01)
-        A = -np.eye(N) * (1 + beta) / 2 - np.tril(np.ones((N, N)), -1)
-        B = ss.binom(alpha + np.arange(N), np.arange(N))[:, None]
-
-        L = np.exp(
-            0.5 * (ss.gammaln(np.arange(N) + alpha + 1) - ss.gammaln(np.arange(N) + 1))
-        )
-        A = (1.0 / L[:, None]) * A * L[None, :]
-        B = (
-            (1.0 / L[:, None])
-            * B
-            * np.exp(-0.5 * ss.gammaln(1 - alpha))
-            * beta ** ((1 - alpha) / 2)
-        )
-    # Legendre (translated)
-    elif measure == "legt":
-        Q = np.arange(N, dtype=np.float64)
-        R = (2 * Q + 1) ** 0.5
-        j, i = np.meshgrid(Q, Q)
-        A = R[:, None] * np.where(i < j, (-1.0) ** (i - j), 1) * R[None, :]
-        B = R[:, None]
-        A = -A
-    # LMU: equivalent to LegT up to normalization
-    elif measure == "lmu":
-        Q = np.arange(N, dtype=np.float64)
-        R = (2 * Q + 1)[:, None]  # / theta
-        j, i = np.meshgrid(Q, Q)
-        A = np.where(i < j, -1, (-1.0) ** (i - j + 1)) * R
-        B = (-1.0) ** Q[:, None] * R
-    # Legendre (scaled)
-    elif measure == "legs":
+def transition(measure: str, N: int) -> tuple[np.ndarray, np.ndarray]:
+    """Compute A, B transition matrices for HiPPO measures."""
+    if measure == "legs":
         q = np.arange(N, dtype=np.float64)
         col, row = np.meshgrid(q, q)
         r = 2 * q + 1
@@ -89,255 +30,142 @@ def transition(measure, N, **measure_args):
         T = np.sqrt(np.diag(2 * q + 1))
         A = T @ M @ np.linalg.inv(T)
         B = np.diag(T)[:, None]
-
+    elif measure == "legt":
+        Q = np.arange(N, dtype=np.float64)
+        R = (2 * Q + 1) ** 0.5
+        j, i = np.meshgrid(Q, Q)
+        A = R[:, None] * np.where(i < j, (-1.0) ** (i - j), 1) * R[None, :]
+        B = R[:, None]
+        A = -A
+    elif measure == "lmu":
+        Q = np.arange(N, dtype=np.float64)
+        R = (2 * Q + 1)[:, None]
+        j, i = np.meshgrid(Q, Q)
+        A = np.where(i < j, -1, (-1.0) ** (i - j + 1)) * R
+        B = (-1.0) ** Q[:, None] * R
+    else:
+        raise ValueError(f"Unknown measure: {measure}")
     return A, B
 
 
-def shift_up(a, s=None, drop=True, dim=0):
-    assert dim == 0
-    if s is None:
-        s = torch.zeros_like(a[0, ...])
-    s = s.unsqueeze(dim)
-    if drop:
-        a = a[:-1, ...]
-    return torch.cat((s, a), dim=dim)
+class HiPPO_LegS(eqx.Module):
+    """HiPPO-LegS model (scale invariant).
 
-
-def interleave(a, b, uneven=False, dim=0):
-    """Interleave two tensors of same shape"""
-    assert dim == 0
-    if uneven:
-        a_ = a[-1:, ...]
-        a = a[:-1, ...]
-    c = torch.stack((a, b), dim + 1)
-    out_shape = list(a.shape)
-    out_shape[dim] *= 2
-    c = c.view(out_shape)
-    if uneven:
-        c = torch.cat((c, a_), dim=dim)
-    return c
-
-
-def batch_mult(A, u, has_batch=None):
-    """Matrix mult A @ u with special case to save memory if u has additional batch dim
-
-    The batch dimension is assumed to be the second dimension
-    A : (L, ..., N, N)
-    u : (L, [B], ..., N)
-    has_batch: True, False, or None. If None, determined automatically
-
-    Output:
-    x : (L, [B], ..., N)
-      A @ u broadcasted appropriately
+    Pre-computes discretized transition matrices for all timesteps.
+    Uses jax.lax.scan for the sequential recurrence.
     """
 
-    if has_batch is None:
-        has_batch = len(u.shape) >= len(A.shape)
-
-    if has_batch:
-        u = u.permute([0] + list(range(2, len(u.shape))) + [1])
-    else:
-        u = u.unsqueeze(-1)
-    v = A @ u
-    if has_batch:
-        v = v.permute([0] + [len(u.shape) - 1] + list(range(1, len(u.shape) - 1)))
-    else:
-        v = v[..., 0]
-    return v
-
-
-def variable_unroll_general_sequential(A, u, s, op, variable=True):
-    """Unroll with variable (in time/length) transitions A with general associative operation
-
-    A : ([L], ..., N, N) dimension L should exist iff variable is True
-    u : (L, [B], ..., N) updates
-    s : ([B], ..., N) start state
-    output : x (..., N)
-    x[i, ...] = A[i]..A[0] s + A[i..1] u[0] + ... + A[i] u[i-1] + u[i]
-    """
-
-    if not variable:
-        A = A.expand((u.shape[0],) + A.shape)
-
-    outputs = []
-    for A_, u_ in zip(torch.unbind(A, dim=0), torch.unbind(u, dim=0)):
-        s = op(A_, s)
-        s = s + u_
-        outputs.append(s)
-
-    output = torch.stack(outputs, dim=0)
-    return output
-
-
-def variable_unroll_matrix_sequential(A, u, s=None, variable=True):
-    if s is None:
-        s = torch.zeros_like(u[0])
-
-    if not variable:
-        A = A.expand((u.shape[0],) + A.shape)
-
-    op = lambda x, y: batch_mult(x.unsqueeze(0), y.unsqueeze(0))[0]
-
-    return variable_unroll_general_sequential(A, u, s, op, variable=True)
-
-
-def variable_unroll_general(
-    A, u, s, op, compose_op=None, sequential_op=None, variable=True, recurse_limit=16
-):
-    """Bottom-up divide-and-conquer version of variable_unroll.
-
-    compose is an optional function that defines how to compose A without multiplying by a leaf u
-    """
-
-    if u.shape[0] <= recurse_limit:
-        if sequential_op is None:
-            sequential_op = op
-        return variable_unroll_general_sequential(A, u, s, sequential_op, variable)
-
-    if compose_op is None:
-        compose_op = op
-
-    uneven = u.shape[0] % 2 == 1
-    has_batch = len(u.shape) >= len(A.shape)
-
-    u_0 = u[0::2, ...]
-    u_1 = u[1::2, ...]
-
-    if variable:
-        A_0 = A[0::2, ...]
-        A_1 = A[1::2, ...]
-    else:
-        A_0 = A
-        A_1 = A
-
-    u_0_ = u_0
-    A_0_ = A_0
-    if uneven:
-        u_0_ = u_0[:-1, ...]
-        if variable:
-            A_0_ = A_0[:-1, ...]
-
-    u_10 = op(A_1, u_0_)  # batch_mult(A_1, u_0_, has_batch)
-    u_10 = u_10 + u_1
-    A_10 = compose_op(A_1, A_0_)
-
-    # Recursive call
-    x_1 = variable_unroll_general(
-        A_10,
-        u_10,
-        s,
-        op,
-        compose_op,
-        sequential_op,
-        variable=variable,
-        recurse_limit=recurse_limit,
-    )
-
-    x_0 = shift_up(x_1, s, drop=not uneven)
-    x_0 = op(A_0, x_0)  # batch_mult(A_0, x_0, has_batch)
-    x_0 = x_0 + u_0
-
-    x = interleave(
-        x_0, x_1, uneven, dim=0
-    )  # For some reason this interleave is slower than in the (non-multi) unroll_recursive
-    return x
-
-
-def variable_unroll_matrix(A, u, s=None, variable=True, recurse_limit=16):
-    if s is None:
-        s = torch.zeros_like(u[0])
-    has_batch = len(u.shape) >= len(A.shape)
-    op = lambda x, y: batch_mult(x, y, has_batch)
-    sequential_op = lambda x, y: batch_mult(x.unsqueeze(0), y.unsqueeze(0), has_batch)[
-        0
-    ]
-    matmul = lambda x, y: x @ y
-    return variable_unroll_general(
-        A,
-        u,
-        s,
-        op,
-        compose_op=matmul,
-        sequential_op=sequential_op,
-        variable=variable,
-        recurse_limit=recurse_limit,
-    )
-
-
-class HiPPO_LegS(nn.Module):
-    """Vanilla HiPPO-LegS model (scale invariant instead of time invariant)"""
+    N: int = eqx.field(static=True)
+    A_stacked: Float[Array, "L N N"]
+    B_stacked: Float[Array, "L N"]
+    eval_matrix: Float[Array, "L N"]
 
     def __init__(
-        self, N, device, max_length=2048, measure="legs", discretization="bilinear"
+        self,
+        N: int,
+        max_length: int = 2048,
+        measure: str = "legs",
+        discretization: str = "bilinear",
     ):
-        """
-        max_length: maximum sequence length
-        """
-        super().__init__()
         self.N = N
-        self.device = device
         A, B = transition(measure, N)
         B = B.squeeze(-1)
         A_stacked = np.empty((max_length, N, N), dtype=A.dtype)
         B_stacked = np.empty((max_length, N), dtype=B.dtype)
+
+        eye = np.eye(N)
         for t in range(1, max_length + 1):
             At = A / t
             Bt = B / t
             if discretization == "forward":
-                A_stacked[t - 1] = np.eye(N) + At
+                A_stacked[t - 1] = eye + At
                 B_stacked[t - 1] = Bt
             elif discretization == "backward":
                 A_stacked[t - 1] = la.solve_triangular(
-                    np.eye(N) - At, np.eye(N), lower=True
-                )
-                B_stacked[t - 1] = la.solve_triangular(np.eye(N) - At, Bt, lower=True)
-            elif discretization == "bilinear":
-                A_stacked[t - 1] = la.solve_triangular(
-                    np.eye(N) - At / 2, np.eye(N) + At / 2, lower=True
+                    eye - At, eye, lower=True
                 )
                 B_stacked[t - 1] = la.solve_triangular(
-                    np.eye(N) - At / 2, Bt, lower=True
+                    eye - At, Bt, lower=True
                 )
-            else:  # ZOH
-                A_stacked[t - 1] = la.expm(A * (math.log(t + 1) - math.log(t)))
+            elif discretization == "bilinear":
+                A_stacked[t - 1] = la.solve_triangular(
+                    eye - At / 2, eye + At / 2, lower=True
+                )
+                B_stacked[t - 1] = la.solve_triangular(
+                    eye - At / 2, Bt, lower=True
+                )
+            elif discretization == "zoh":
+                A_stacked[t - 1] = la.expm(
+                    A * (math.log(t + 1) - math.log(t))
+                )
                 B_stacked[t - 1] = la.solve_triangular(
                     A, A_stacked[t - 1] @ B - B, lower=True
                 )
-        self.A_stacked = torch.tensor(A_stacked).to(self.device)  # (max_length, N, N)
-        self.B_stacked = torch.tensor(B_stacked).to(self.device)  # (max_length, N)
+            else:
+                raise ValueError(f"Unknown discretization: {discretization}")
+
+        self.A_stacked = jnp.array(A_stacked)
+        self.B_stacked = jnp.array(B_stacked)
 
         vals = np.linspace(0.0, 1.0, max_length)
-        self.eval_matrix = torch.tensor(
+        self.eval_matrix = jnp.array(
             (B[:, None] * ss.eval_legendre(np.arange(N)[:, None], 2 * vals - 1)).T
-        ).to(self.device)
+        )
 
-    def forward(self, inputs, prev_discrete_steps=0, ini=None, fast=False):
+    def __call__(
+        self,
+        inputs: Float[Array, "L ..."],
+        *,
+        prev_discrete_steps: int = 0,
+        ini: Float[Array, "... N"] | None = None,
+        fast: bool = False,
+    ) -> Float[Array, "L ... N"]:
+        """Run HiPPO sequential scan.
 
-        # inputs : (length, ...)
-        # output : (length, ..., N) where N is the order of the HiPPO projection
+        Args:
+            inputs: [L, ...] input signal
+            prev_discrete_steps: number of previous steps (for time indexing)
+            ini: initial state [... N] or None
+            fast: unused (kept for API compatibility; scan is always used)
 
+        Returns:
+            outputs: [L, ..., N] HiPPO coefficients at each timestep
+        """
         L = inputs.shape[0]
-        current_discrete_steps = prev_discrete_steps + L
+        current_end = prev_discrete_steps + L
 
-        inputs = inputs.unsqueeze(-1)
-        u = torch.transpose(inputs, 0, -2)
-        u = u * self.B_stacked[int(prev_discrete_steps) : int(current_discrete_steps)]
-        u = torch.transpose(u, 0, -2)  # (length, ..., N)
+        # Slice pre-computed matrices for the relevant timesteps
+        A_slice = self.A_stacked[prev_discrete_steps:current_end]  # [L, N, N]
+        B_slice = self.B_stacked[prev_discrete_steps:current_end]  # [L, N]
 
-        if fast:
-            result = variable_unroll_matrix(
-                self.A_stacked[int(prev_discrete_steps) : int(current_discrete_steps)],
-                u,
-                s=ini,
-            )
+        # Compute u = inputs[..., None] * B -> [L, ..., N]
+        # For multi-dim inputs (e.g. [L, 2R]), we need to swap the time
+        # dimension with the second-to-last to broadcast B correctly.
+        inputs_expanded = inputs[..., None]  # [L, ..., 1]
+        if inputs_expanded.ndim > 2:
+            # [L, ..., 1] -> [..., L, 1] (swap time to second-to-last)
+            u = jnp.swapaxes(inputs_expanded, 0, -2)
+            u = u * B_slice  # [..., L, N]  (B_slice is [L, N])
+            u = jnp.swapaxes(u, 0, -2)  # [L, ..., N]
         else:
-            result = variable_unroll_matrix_sequential(
-                self.A_stacked[int(prev_discrete_steps) : int(current_discrete_steps)],
-                u,
-                s=ini,
-            )
-        return result
+            u = inputs_expanded * B_slice  # [L, 1] * [L, N] = [L, N]
 
-    def reconstruct(self, c):
-        a = self.eval_matrix @ c.unsqueeze(-1)
-        return a.squeeze(-1)
+        if ini is None:
+            ini = jnp.zeros_like(u[0])
+
+        def scan_fn(carry, x):
+            # carry: [..., N] state
+            # x: (A_t, u_t) where A_t is [N, N], u_t is [..., N]
+            A_t, u_t = x
+            # c[t] = A_t @ c[t-1] + u_t
+            new_carry = jnp.einsum("ij,...j->...i", A_t, carry) + u_t
+            return new_carry, new_carry
+
+        _, outputs = jax.lax.scan(scan_fn, ini, (A_slice, u))
+        return outputs
+
+    def reconstruct(
+        self, c: Float[Array, "... N"]
+    ) -> Float[Array, "... L"]:
+        """Reconstruct signal from HiPPO coefficients."""
+        return (self.eval_matrix @ c[..., None]).squeeze(-1)

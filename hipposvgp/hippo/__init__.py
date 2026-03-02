@@ -1,3 +1,5 @@
-from hipposvgp.hippo.legs import HiPPO_LegS, transition
+"""HiPPO modules."""
 
-__all__ = ["HiPPO_LegS", "transition"]
+from hipposvgp.hippo.legs import HiPPO_LegS
+
+__all__ = ["HiPPO_LegS"]

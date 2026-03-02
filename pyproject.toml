@@ -3,13 +3,20 @@ name = "analytic-hippo-svgp"
 version = "0.0.1"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy",
-    "scipy",
-    "torch>=2.0",
-    "matplotlib",
-    "tqdm",
-    "pyyaml",
+    "jax>=0.4.35",
+    "jaxlib>=0.4.35",
+    "equinox>=0.11",
+    "optax>=0.2",
+    "jaxtyping>=0.2.34",
+    "beartype>=0.19",
+    "numpy>=1.26",
+    "scipy>=1.14",
+    "matplotlib>=3.8",
+    "pyyaml>=6.0",
 ]
+
+[project.optional-dependencies]
+cuda12 = ["jax[cuda12]>=0.4.35"]
 
 [build-system]
 requires = ["setuptools>=64"]

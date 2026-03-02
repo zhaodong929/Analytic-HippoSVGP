@@ -1,8 +1,10 @@
 """Negative Binomial likelihood."""
 
-import torch
-import torch.nn as nn
-from torch.distributions import NegativeBinomial as NegativeBinomial_
+from __future__ import annotations
+
+import jax
+import jax.numpy as jnp
+from jaxtyping import Array, Float
 
 from hipposvgp.likelihoods.base import Likelihood
 
@@ -14,34 +16,28 @@ class NegativeBinomialLikelihood(Likelihood):
     Dispersion parameter nu in (0, 1) via sigmoid.
     """
 
-    def __init__(self, initial_nu=0.5):
-        super().__init__()
-        self._nu = nn.Parameter(torch.tensor(initial_nu, dtype=torch.float32))
+    _nu: Float[Array, ""]
+
+    def __init__(self, initial_nu: float = 0.5):
+        self._nu = jnp.array(initial_nu)
 
     @property
-    def nu(self):
-        return torch.sigmoid(self._nu)
+    def nu(self) -> Float[Array, ""]:
+        return jax.nn.sigmoid(self._nu)
 
     @staticmethod
-    def link_fn(f):
-        return torch.nn.functional.softplus(f)
+    def link_fn(f: Float[Array, "..."]) -> Float[Array, "..."]:
+        return jax.nn.softplus(f)
 
-    def log_prob(self, logmu, y):
+    def log_prob(
+        self, logmu: Float[Array, "N 1"], y: Float[Array, "N 1"]
+    ) -> Float[Array, "N 1"]:
         mu = self.link_fn(logmu)
         nu = self.nu
         alpha = mu * (1 - nu) / nu
-
         log_gamma_term = (
-            torch.special.gammaln(y + alpha)
-            - torch.special.gammaln(alpha)
-            - torch.special.gammaln(y + 1)
+            jax.lax.lgamma(y + alpha)
+            - jax.lax.lgamma(alpha)
+            - jax.lax.lgamma(y + 1)
         )
-        return log_gamma_term + y * torch.log(nu) + alpha * torch.log(1 - nu)
-
-    def sample(self, logmu, num_samples=30):
-        """Vectorized sampling from the negative binomial distribution."""
-        mu = self.link_fn(logmu)  # [S, N]
-        nu = self.nu
-        alpha = mu * (1 - nu) / nu  # [S, N]
-        dist = NegativeBinomial_(total_count=alpha, probs=nu)
-        return dist.sample(sample_shape=(num_samples,))  # [num_samples, S, N]
+        return log_gamma_term + y * jnp.log(nu) + alpha * jnp.log(1 - nu)

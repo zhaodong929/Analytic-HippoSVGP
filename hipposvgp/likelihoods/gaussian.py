@@ -1,9 +1,11 @@
 """Gaussian likelihood."""
 
+from __future__ import annotations
+
 import math
 
-import torch
-import torch.nn as nn
+import jax.numpy as jnp
+from jaxtyping import Array, Float
 
 from hipposvgp.likelihoods.base import Likelihood
 
@@ -11,28 +13,31 @@ from hipposvgp.likelihoods.base import Likelihood
 class GaussianLikelihood(Likelihood):
     """Gaussian likelihood with learnable noise variance."""
 
-    def __init__(self, variance=1.0):
-        super().__init__()
-        self.log_variance = nn.Parameter(torch.log(torch.tensor(variance)))
+    log_variance: Float[Array, ""]
+
+    def __init__(self, variance: float = 1.0):
+        self.log_variance = jnp.log(jnp.array(variance))
 
     @property
-    def variance(self):
-        return torch.exp(self.log_variance)
+    def variance(self) -> Float[Array, ""]:
+        return jnp.exp(self.log_variance)
 
-    def log_prob(self, f, y):
+    def log_prob(
+        self, f: Float[Array, "N 1"], y: Float[Array, "N 1"]
+    ) -> Float[Array, "N 1"]:
         return -0.5 * (
-            torch.log(2 * math.pi * self.variance)
+            jnp.log(2 * math.pi * self.variance)
             + ((y - f) ** 2) / self.variance
         )
 
-    def variational_expectations(self, f_mean, f_var, y):
+    def variational_expectations(
+        self,
+        f_mean: Float[Array, "N 1"],
+        f_var: Float[Array, "N 1"],
+        y: Float[Array, "N 1"],
+    ) -> Float[Array, "N 1"]:
         """E_q[log p(y|f)] in closed form for Gaussian likelihood."""
         return -0.5 * (
-            torch.log(2 * math.pi * self.variance)
+            jnp.log(2 * math.pi * self.variance)
             + ((y - f_mean) ** 2 + f_var) / self.variance
         )
-
-    def conditional_moments(self, f):
-        mean_y = f
-        var_y = torch.ones_like(f) * self.variance
-        return mean_y, var_y

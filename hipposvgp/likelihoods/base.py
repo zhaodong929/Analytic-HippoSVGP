@@ -1,24 +1,19 @@
 """Abstract base class for likelihoods."""
 
-from abc import ABC, abstractmethod
+from __future__ import annotations
 
-import torch.nn as nn
+import abc
+
+import equinox as eqx
+from jaxtyping import Array, Float
 
 
-class Likelihood(nn.Module, ABC):
+class Likelihood(eqx.Module):
     """Base class for all likelihoods."""
 
-    def __init__(self):
-        super().__init__()
-
-    @abstractmethod
-    def log_prob(self, f, y):
-        """Compute log p(y | f).
-
-        Args:
-            f: function values [N, 1] or [N]
-            y: observations [N, 1] or [N]
-
-        Returns:
-            Log likelihood tensor.
-        """
+    @abc.abstractmethod
+    def log_prob(
+        self, f: Float[Array, "N 1"], y: Float[Array, "N 1"]
+    ) -> Float[Array, "N 1"]:
+        """Compute log p(y | f)."""
+        ...

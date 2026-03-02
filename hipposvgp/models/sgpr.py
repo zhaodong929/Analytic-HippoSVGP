@@ -1,161 +1,140 @@
 """Online Sparse GP Regression (VFE collapsed bound).
 
-Separate from OnlineSVGP because SGPR uses a collapsed ELBO
-(no explicit variational parameters mv, Lv) with Woodbury-based formulas.
-Gaussian likelihood only -- noise variance is a learned parameter.
+Uses a collapsed ELBO (no explicit variational parameters mv, Lv)
+with Woodbury-based formulas. Gaussian likelihood only.
 """
 
+from __future__ import annotations
+
 import math
-from dataclasses import dataclass
-from typing import Optional
 
-import torch
-import torch.nn as nn
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+from jaxtyping import Array, Float, PRNGKeyArray
 
+from hipposvgp.inducing.base import InducingStrategy
+from hipposvgp.kernels.base import Kernel
 from hipposvgp.linalg import add_jitter
-from hipposvgp.rff import SpectralSample
+from hipposvgp.types import KernelMatrices, SGPRPosteriorState, SpectralSample
 
 
-@dataclass
-class SGPRPosteriorState:
-    """Transfer posterior state between tasks for SGPR."""
-
-    mu: torch.Tensor  # [M, 1] optimal posterior mean at inducing points
-    Su: torch.Tensor  # [M, M] optimal posterior covariance
-    Kaa: torch.Tensor  # [M, M] inducing kernel matrix
-    Z: torch.Tensor  # feature matrix
-
-
-@dataclass
-class _SGPRTerms:
+class _SGPRTerms(eqx.Module):
     """Intermediate terms shared by ELBO, prediction, and qb_opt."""
 
-    Kff: torch.Tensor
-    Kbf: torch.Tensor
-    Kba: Optional[torch.Tensor]
-    Kaa: Optional[torch.Tensor]
-    Kaa_cur: Optional[torch.Tensor]
-    La: Optional[torch.Tensor]
-    Kbb: torch.Tensor
-    Lb: torch.Tensor
-    D: torch.Tensor
-    LD: torch.Tensor
-    Lbinv_Kba: Optional[torch.Tensor]
-    LDinv_Lbinv_c: torch.Tensor
-    err: torch.Tensor
-    Qff: torch.Tensor
+    Kff: Float[Array, "N N"]
+    Kbf: Float[Array, "M N"]
+    Kba: Float[Array, "M Mp"] | None
+    Kaa: Float[Array, "Mp Mp"] | None
+    Kaa_cur: Float[Array, "Mp Mp"] | None
+    La: Float[Array, "Mp Mp"] | None
+    Kbb: Float[Array, "M M"]
+    Lb: Float[Array, "M M"]
+    D: Float[Array, "M M"]
+    LD: Float[Array, "M M"]
+    Lbinv_Kba: Float[Array, "M Mp"] | None
+    LDinv_Lbinv_c: Float[Array, "M 1"]
+    err: Float[Array, "N 1"]
+    Qff: Float[Array, "M M"]
 
 
-class OnlineSGPR(nn.Module):
+class OnlineSGPR(eqx.Module):
     """Online Sparse GP Regression with HiPPO inducing features.
 
     Uses a collapsed bound (VFE) instead of explicit variational inference.
-    Gaussian likelihood only (noise variance is a learned parameter).
-
-    For non-Gaussian likelihoods, use OnlineSVGP instead.
-
-    Args:
-        kernel: Kernel module
-        inducing_strategy: InducingStrategy module
-        device: torch device
-        X: [N, D] training inputs
-        y: [N, 1] training targets
-        prior_state: SGPRPosteriorState from previous task (None for first task)
-        spectral_sample: fixed SpectralSample (None to sample from kernel)
+    Gaussian likelihood only.
     """
+
+    kernel: Kernel
+    inducing_strategy: InducingStrategy
+    log_noise: Float[Array, ""]
+    X: Float[Array, "N D"]
+    y: Float[Array, "N 1"]
+    # Prior state from previous task
+    mu_old: Float[Array, "M 1"] | None = None
+    Su_old: Float[Array, "M M"] | None = None
+    Kaa_old: Float[Array, "M M"] | None = None
+    Z_old: Float[Array, "TwoR M"] | None = None
+    # Config
+    jitter: float = eqx.field(static=True, default=1e-6)
 
     def __init__(
         self,
-        kernel,
-        inducing_strategy,
-        device,
-        X,
-        y,
-        prior_state=None,
-        spectral_sample=None,
-        dtype=torch.float64,
+        kernel: Kernel,
+        inducing_strategy: InducingStrategy,
+        X: Float[Array, "N D"],
+        y: Float[Array, "N 1"],
+        *,
+        prior_state: SGPRPosteriorState | None = None,
+        spectral_sample: SpectralSample | None = None,
+        jitter: float = 1e-6,
     ):
-        super().__init__()
-        self.device = device
-        self.dtype = dtype
         self.kernel = kernel
         self.inducing_strategy = inducing_strategy
-        self.spectral_sample = spectral_sample
+        self.X = X
+        self.y = y
+        self.log_noise = jnp.array(-3.0)
+        self.jitter = jitter
 
-        self.X = torch.as_tensor(X, dtype=dtype, device=device)
-        self.y = torch.as_tensor(y, dtype=dtype, device=device)
-        self.num_data = self.X.shape[0]
-
-        self.log_noise = nn.Parameter(torch.tensor([-3.0], dtype=dtype))
-        self.jitter = 1e-6
-
-        # Prior state from previous task
         if prior_state is not None:
-            self.mu_old = prior_state.mu.clone().detach().to(dtype=dtype, device=device)
-            self.Su_old = prior_state.Su.clone().detach().to(dtype=dtype, device=device)
-            self.Kaa_old = prior_state.Kaa.clone().detach().to(dtype=dtype, device=device)
-            self.Z_old = (
-                prior_state.Z.clone().detach().to(dtype=dtype, device=device)
-                if prior_state.Z is not None
-                else None
-            )
+            self.mu_old = prior_state.mu
+            self.Su_old = prior_state.Su
+            self.Kaa_old = prior_state.Kaa
+            self.Z_old = prior_state.Z
         else:
             self.mu_old = None
             self.Su_old = None
             self.Kaa_old = None
             self.Z_old = None
 
-        self._cached_km = None
-        self._cached_sample = None
-
     @property
-    def _has_prior(self):
-        """Whether this model has a prior from a previous task."""
+    def _has_prior(self) -> bool:
         return self.mu_old is not None
 
-    def _add_jitter(self, K):
+    @property
+    def num_data(self) -> int:
+        return self.X.shape[0]
+
+    def _add_jitter(self, K: Float[Array, "N N"]) -> Float[Array, "N N"]:
         return add_jitter(K, jitter=self.jitter)
 
-    def _common_terms(self, sample=None):
-        """Compute intermediate terms shared by ELBO, prediction, and qb_opt.
-
-        Handles both first task (no prior) and online tasks (with prior).
-        Results are cached for reuse by predict/qb_opt.
-        """
+    def _common_terms(
+        self,
+        *,
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> tuple[_SGPRTerms, KernelMatrices, SpectralSample]:
+        """Compute intermediate terms shared by ELBO, prediction, and qb_opt."""
         Mb = self.inducing_strategy.inducing_size
-        sigma2 = torch.exp(self.log_noise)
-        sigma = torch.sqrt(sigma2)
+        sigma2 = jnp.exp(self.log_noise)
+        sigma = jnp.sqrt(sigma2)
 
-        # Compute kernel matrices via inducing strategy
-        effective_sample = self.spectral_sample if sample is None else sample
         km, resolved_sample = self.inducing_strategy.compute_kernel_matrices(
             self.kernel,
             self.X,
             Z_old=self.Z_old if self._has_prior else None,
             Kaa_old=self.Kaa_old if self._has_prior else None,
             flag_update_kernel=True,
-            sample=effective_sample,
+            sample=sample,
+            key=key,
         )
-        self._cached_km = km
-        self._cached_sample = resolved_sample
 
         Kff = km.Kff
         Kfb = km.Kfu
         Kbf = Kfb.T
         Kbb = self._add_jitter(km.Kuu)
 
-        # Data term: c = Kbf y / sigma^2
+        # Data term
         Sinv_y = self.y / sigma2
         c = Kbf @ Sinv_y
 
-        Lb = torch.linalg.cholesky(Kbb)
-        Lbinv_Kbf = torch.linalg.solve_triangular(Lb, Kbf, upper=False) / sigma
+        Lb = jnp.linalg.cholesky(Kbb)
+        Lbinv_Kbf = jax.scipy.linalg.solve_triangular(Lb, Kbf, lower=True) / sigma
         d1 = Lbinv_Kbf @ Lbinv_Kbf.T
 
-        # D starts as I + d1 (standard SGPR)
-        D = torch.eye(Mb, device=self.device, dtype=self.dtype) + d1
+        D = jnp.eye(Mb) + d1
 
-        # Online correction terms (only with prior from previous task)
+        # Online correction terms
         Kba = None
         Kaa = None
         Kaa_cur = None
@@ -172,112 +151,111 @@ class OnlineSGPR(nn.Module):
             Kaa = self._add_jitter(self.Kaa_old)
 
             # Prior contribution to c
-            Sainv_ma = torch.linalg.solve(Saa, ma)
+            Sainv_ma = jnp.linalg.solve(Saa, ma)
             c = c + Kba @ Sainv_ma
 
-            Lbinv_Kba = torch.linalg.solve_triangular(Lb, Kba, upper=False)
+            Lbinv_Kba = jax.scipy.linalg.solve_triangular(Lb, Kba, lower=True)
 
             # d2: prior precision term
-            LSa = torch.linalg.cholesky(Saa)
+            LSa = jnp.linalg.cholesky(Saa)
             Kab_Lbinv = Lbinv_Kba.T
-            LSainv_Kab_Lbinv = torch.linalg.solve_triangular(
-                LSa, Kab_Lbinv, upper=False
+            LSainv_Kab_Lbinv = jax.scipy.linalg.solve_triangular(
+                LSa, Kab_Lbinv, lower=True
             )
             d2 = LSainv_Kab_Lbinv.T @ LSainv_Kab_Lbinv
 
             # d3: prior kernel inverse term
-            La = torch.linalg.cholesky(Kaa)
-            Lainv_Kab_Lbinv = torch.linalg.solve_triangular(
-                La, Kab_Lbinv, upper=False
+            La = jnp.linalg.cholesky(Kaa)
+            Lainv_Kab_Lbinv = jax.scipy.linalg.solve_triangular(
+                La, Kab_Lbinv, lower=True
             )
             d3 = Lainv_Kab_Lbinv.T @ Lainv_Kab_Lbinv
 
             D = D + d2 - d3
 
         D = self._add_jitter(D)
-        LD = torch.linalg.cholesky(D)
+        LD = jnp.linalg.cholesky(D)
 
-        Lbinv_c = torch.linalg.solve_triangular(Lb, c, upper=False)
-        LDinv_Lbinv_c = torch.linalg.solve_triangular(LD, Lbinv_c, upper=False)
+        Lbinv_c = jax.scipy.linalg.solve_triangular(Lb, c, lower=True)
+        LDinv_Lbinv_c = jax.scipy.linalg.solve_triangular(LD, Lbinv_c, lower=True)
 
-        return _SGPRTerms(
+        terms = _SGPRTerms(
             Kff=Kff, Kbf=Kbf, Kba=Kba, Kaa=Kaa, Kaa_cur=Kaa_cur,
             La=La, Kbb=Kbb, Lb=Lb, D=D, LD=LD,
             Lbinv_Kba=Lbinv_Kba, LDinv_Lbinv_c=LDinv_Lbinv_c,
             err=self.y, Qff=d1,
         )
+        return terms, km, resolved_sample
 
-    def elbo(self):
-        """Compute collapsed ELBO (no explicit variational parameters).
+    def elbo(
+        self,
+        *,
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> tuple[Float[Array, ""], KernelMatrices, SpectralSample]:
+        """Compute collapsed ELBO.
 
         Returns:
-            Scalar ELBO value.
+            (elbo, km, sample): ELBO value, kernel matrices, resolved sample
         """
-        sigma2 = torch.exp(self.log_noise)
+        sigma2 = jnp.exp(self.log_noise)
         N = self.num_data
 
-        t = self._common_terms()
-        Kfdiag = torch.diag(t.Kff)
+        t, km, resolved_sample = self._common_terms(sample=sample, key=key)
+        Kfdiag = jnp.diag(t.Kff)
 
         # Standard SGPR terms
         bound = -0.5 * N * math.log(2 * math.pi)
-        bound -= 0.5 * torch.sum(t.err.pow(2)) / sigma2
-        bound += 0.5 * torch.sum(t.LDinv_Lbinv_c.pow(2))
-        bound -= 0.5 * N * torch.sum(torch.log(sigma2))
-        bound -= torch.sum(torch.log(torch.diag(t.LD)))
-        # Trace correction: -1/(2sigma^2) tr(Kff - Qff)
-        bound -= 0.5 * torch.sum(Kfdiag) / sigma2
-        bound += 0.5 * torch.sum(torch.diag(t.Qff))
+        bound = bound - 0.5 * jnp.sum(t.err**2) / sigma2
+        bound = bound + 0.5 * jnp.sum(t.LDinv_Lbinv_c**2)
+        bound = bound - 0.5 * N * jnp.sum(jnp.log(sigma2))
+        bound = bound - jnp.sum(jnp.log(jnp.diag(t.LD)))
+        bound = bound - 0.5 * jnp.sum(Kfdiag) / sigma2
+        bound = bound + 0.5 * jnp.sum(jnp.diag(t.Qff))
 
-        # Online correction (only with prior)
+        # Online correction
         if self._has_prior:
             Saa = self.Su_old
             ma = self.mu_old
 
-            LSa = torch.linalg.cholesky(Saa)
-            Lainv_ma = torch.linalg.solve_triangular(LSa, ma, upper=False)
-            bound -= 0.5 * torch.sum(Lainv_ma.pow(2))
+            LSa = jnp.linalg.cholesky(Saa)
+            Lainv_ma = jax.scipy.linalg.solve_triangular(LSa, ma, lower=True)
+            bound = bound - 0.5 * jnp.sum(Lainv_ma**2)
 
-            # Log-det ratio: log|Kaa|^{1/2} - log|Saa|^{1/2}
-            bound += torch.sum(torch.log(torch.diag(t.La)))
-            bound -= torch.sum(torch.log(torch.diag(LSa)))
+            # Log-det ratio
+            bound = bound + jnp.sum(jnp.log(jnp.diag(t.La)))
+            bound = bound - jnp.sum(jnp.log(jnp.diag(LSa)))
 
             # Inducing point correction
             Kaadiff = t.Kaa_cur - t.Lbinv_Kba.T @ t.Lbinv_Kba
-            Sainv_Kaadiff = torch.linalg.solve(Saa, Kaadiff)
-            Kainv_Kaadiff = torch.linalg.solve(t.Kaa, Kaadiff)
-            bound -= 0.5 * torch.sum(
-                torch.diag(Sainv_Kaadiff) - torch.diag(Kainv_Kaadiff)
+            Sainv_Kaadiff = jnp.linalg.solve(Saa, Kaadiff)
+            Kainv_Kaadiff = jnp.linalg.solve(t.Kaa, Kaadiff)
+            bound = bound - 0.5 * jnp.sum(
+                jnp.diag(Sainv_Kaadiff) - jnp.diag(Kainv_Kaadiff)
             )
 
-        return bound
+        return bound, km, resolved_sample
 
-    def predict(self, Xnew, sample=None, full_cov=False, include_noise=True):
-        """Compute predictive mean and variance at new points.
-
-        Args:
-            Xnew: [N*, D] test inputs
-            sample: SpectralSample (None to use cached from last _common_terms call)
-            full_cov: if True, return full covariance matrix
-            include_noise: if True, add observation noise to variance
-
-        Returns:
-            mean: [N*, 1] predictive mean
-            var: [N*] or [N*, N*] predictive variance
-        """
-        effective_sample = self.spectral_sample if sample is None else sample
-        t = self._common_terms(sample=effective_sample)
-
-        resolved_sample = self._cached_sample
+    def predict(
+        self,
+        Xnew: Float[Array, "Ns D"],
+        *,
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+        full_cov: bool = False,
+        include_noise: bool = True,
+    ) -> tuple[Float[Array, "Ns 1"], Float[Array, "..."]]:
+        """Compute predictive mean and variance at new points."""
+        t, km, resolved_sample = self._common_terms(sample=sample, key=key)
 
         Kuu, Kfu_new, Kff_new = self.inducing_strategy.compute_prediction_matrices(
-            self.kernel, Xnew, sample=resolved_sample
+            self.kernel, Xnew, sample=resolved_sample, key=key
         )
         Kbs = Kfu_new.T
 
-        Lbinv_Kbs = torch.linalg.solve_triangular(t.Lb, Kbs, upper=False)
-        LDinv_Lbinv_Kbs = torch.linalg.solve_triangular(
-            t.LD, Lbinv_Kbs, upper=False
+        Lbinv_Kbs = jax.scipy.linalg.solve_triangular(t.Lb, Kbs, lower=True)
+        LDinv_Lbinv_Kbs = jax.scipy.linalg.solve_triangular(
+            t.LD, Lbinv_Kbs, lower=True
         )
         mean = LDinv_Lbinv_Kbs.T @ t.LDinv_Lbinv_c
 
@@ -289,35 +267,32 @@ class OnlineSGPR(nn.Module):
                 + LDinv_Lbinv_Kbs.T @ LDinv_Lbinv_Kbs
             )
             if include_noise:
-                var += torch.exp(self.log_noise) * torch.eye(
-                    var.shape[0], device=self.device, dtype=self.dtype
-                )
+                var = var + jnp.exp(self.log_noise) * jnp.eye(var.shape[0])
         else:
-            # Use exact kernel diagonal (not RFF approximation) for numerical stability
             var1 = self.kernel(Xnew, diag=True)
-            var2 = -torch.sum(Lbinv_Kbs.pow(2), 0)
-            var3 = torch.sum(LDinv_Lbinv_Kbs.pow(2), 0)
+            var2 = -jnp.sum(Lbinv_Kbs**2, axis=0)
+            var3 = jnp.sum(LDinv_Lbinv_Kbs**2, axis=0)
             var = var1 + var2 + var3
             if include_noise:
-                var += torch.exp(self.log_noise) * torch.ones_like(var)
+                var = var + jnp.exp(self.log_noise) * jnp.ones_like(var)
 
         return mean, var
 
-    def qb_opt(self, full_cov=True):
-        """Compute optimal posterior at inducing points.
+    def qb_opt(
+        self,
+        *,
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+        full_cov: bool = True,
+    ) -> tuple[Float[Array, "M 1"], Float[Array, "M M"], Float[Array, "M M"]]:
+        """Compute optimal posterior at inducing points."""
+        t, km, _ = self._common_terms(sample=sample, key=key)
+        Kss = t.Kbb
+        Kbs = t.Kbb
 
-        Returns:
-            mean: [M, 1] posterior mean
-            var: [M, M] or [M] posterior (co)variance
-            Kbb: [M, M] inducing kernel matrix
-        """
-        t = self._common_terms()
-        Kss = t.Kbb.clone()
-        Kbs = t.Kbb.clone()
-
-        Lbinv_Kbs = torch.linalg.solve_triangular(t.Lb, Kbs, upper=False)
-        LDinv_Lbinv_Kbs = torch.linalg.solve_triangular(
-            t.LD, Lbinv_Kbs, upper=False
+        Lbinv_Kbs = jax.scipy.linalg.solve_triangular(t.Lb, Kbs, lower=True)
+        LDinv_Lbinv_Kbs = jax.scipy.linalg.solve_triangular(
+            t.LD, Lbinv_Kbs, lower=True
         )
         mean = LDinv_Lbinv_Kbs.T @ t.LDinv_Lbinv_c
 
@@ -328,24 +303,25 @@ class OnlineSGPR(nn.Module):
                 + LDinv_Lbinv_Kbs.T @ LDinv_Lbinv_Kbs
             )
         else:
-            var1 = torch.diag(Kss)
-            var2 = -torch.sum(Lbinv_Kbs.pow(2), 0)
-            var3 = torch.sum(LDinv_Lbinv_Kbs.pow(2), 0)
+            var1 = jnp.diag(Kss)
+            var2 = -jnp.sum(Lbinv_Kbs**2, axis=0)
+            var3 = jnp.sum(LDinv_Lbinv_Kbs**2, axis=0)
             var = var1 + var2 + var3
 
         return mean, var, t.Kbb
 
-    def get_posterior_state(self):
-        """Extract current optimal posterior state for transfer to next task."""
-        mu, Su, Kbb = self.qb_opt(full_cov=True)
-        Z = (
-            self._cached_km.Z.detach()
-            if self._cached_km is not None and self._cached_km.Z is not None
-            else None
-        )
+    def get_posterior_state(
+        self,
+        *,
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> SGPRPosteriorState:
+        """Extract current optimal posterior state for transfer."""
+        mu, Su, Kbb = self.qb_opt(sample=sample, key=key, full_cov=True)
+        _, km, _ = self._common_terms(sample=sample, key=key)
         return SGPRPosteriorState(
-            mu=mu.detach().clone(),
-            Su=Su.detach().clone(),
-            Kaa=Kbb.detach().clone(),
-            Z=Z,
+            mu=mu,
+            Su=Su,
+            Kaa=Kbb,
+            Z=km.Z,
         )

@@ -1,51 +1,44 @@
 """Abstract base class for kernels."""
 
-from abc import ABC, abstractmethod
+from __future__ import annotations
 
-import torch
-import torch.nn as nn
+import abc
+
+import equinox as eqx
+import jax.numpy as jnp
+from jaxtyping import Array, Float, PRNGKeyArray
+
+from hipposvgp.types import SpectralSample
 
 
-class Kernel(nn.Module, ABC):
+class Kernel(eqx.Module):
     """Base class for all kernels.
 
-    Subclasses must implement ``forward`` and ``sample_from_spectral``.
-    ``sample_from_spectral`` returns a ``SpectralSample`` dataclass.
+    Subclasses must implement ``__call__`` and ``sample_from_spectral``.
     """
 
-    def __init__(self):
-        super().__init__()
+    log_sf: Float[Array, "..."]
 
     @property
-    def device(self):
-        """Infer device from parameters."""
-        return next(self.parameters()).device
+    def signal_variance(self) -> Float[Array, ""]:
+        return jnp.exp(self.log_sf).squeeze()
 
-    @property
-    def signal_variance(self):
-        """Return exp(log_sf) if the kernel defines log_sf."""
-        return torch.exp(self.log_sf)
+    @abc.abstractmethod
+    def __call__(
+        self,
+        X1: Float[Array, "N D"],
+        X2: Float[Array, "M D"] | None = None,
+        *,
+        diag: bool = False,
+    ) -> Float[Array, "..."]:
+        """Compute kernel matrix k(X1, X2)."""
+        ...
 
-    @abstractmethod
-    def forward(self, X1, X2=None, diag=False):
-        """Compute kernel matrix k(X1, X2).
-
-        Args:
-            X1: [N, D] or [B, N, D]
-            X2: [M, D] or [B, M, D], defaults to X1
-            diag: if True, return only diagonal elements
-
-        Returns:
-            Kernel matrix [N, M] or diagonal [N].
-        """
-
-    @abstractmethod
-    def sample_from_spectral(self, num_rff):
-        """Sample from the spectral density of this kernel.
-
-        Args:
-            num_rff: number of random Fourier features
-
-        Returns:
-            SpectralSample with frequencies and scale.
-        """
+    @abc.abstractmethod
+    def sample_from_spectral(
+        self,
+        num_rff: int,
+        key: PRNGKeyArray,
+    ) -> SpectralSample:
+        """Sample from the spectral density of this kernel."""
+        ...

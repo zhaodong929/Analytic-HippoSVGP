@@ -1,29 +1,35 @@
 """Standard learnable inducing points (no HiPPO)."""
 
-import torch
-import torch.nn as nn
+from __future__ import annotations
 
-from hipposvgp.inducing.base import InducingStrategy, KernelMatrices
+import jax.numpy as jnp
+from jaxtyping import Array, Float, PRNGKeyArray
+
+from hipposvgp.inducing.base import InducingStrategy
+from hipposvgp.kernels.base import Kernel
+from hipposvgp.types import KernelMatrices, SpectralSample
 
 
 class StandardInducing(InducingStrategy):
-    """Learnable inducing point locations optimised directly.
+    """Learnable inducing point locations optimised directly."""
 
-    This is a baseline strategy where Z are free parameters.
-    """
+    Z: Float[Array, "M D"]
 
-    def __init__(self, inducing_size, input_dim, device, dtype=torch.float64):
-        super().__init__(inducing_size)
-        self.device = device
-        self.dtype = dtype
-        self.Z = nn.Parameter(
-            torch.zeros(inducing_size, input_dim, dtype=dtype, device=device),
-            requires_grad=True,
-        )
+    def __init__(self, inducing_size: int, input_dim: int):
+        self.inducing_size = inducing_size
+        self.Z = jnp.zeros((inducing_size, input_dim))
 
     def compute_kernel_matrices(
-        self, kernel, X, *, Z_old=None, Kaa_old=None, flag_update_kernel=True, sample=None
-    ):
+        self,
+        kernel: Kernel,
+        X: Float[Array, "N D"],
+        *,
+        Z_old: Float[Array, "Mo D"] | None = None,
+        Kaa_old: Float[Array, "Mo Mo"] | None = None,
+        flag_update_kernel: bool = True,
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> tuple[KernelMatrices, None]:
         Kuu = kernel(self.Z, self.Z)
         Kfu = kernel(X, self.Z)
         Kff = kernel(X, X)
@@ -44,9 +50,15 @@ class StandardInducing(InducingStrategy):
             Kold_old=Kold_old,
             Kold_old_newk=Kold_old_newk,
             Z=self.Z,
-        ), None  # no sample for standard inducing
+        ), None
 
-    def compute_prediction_matrices(self, kernel, Xnew, sample=None):
+    def compute_prediction_matrices(
+        self,
+        kernel: Kernel,
+        Xnew: Float[Array, "Ns D"],
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> tuple[Float[Array, "M M"], Float[Array, "Ns M"], Float[Array, "Ns Ns"]]:
         Kuu = kernel(self.Z, self.Z)
         Kfu_new = kernel(Xnew, self.Z)
         Kff_new = kernel(Xnew, Xnew)

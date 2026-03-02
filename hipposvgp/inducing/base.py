@@ -1,158 +1,127 @@
-"""Abstract base class and data structures for inducing strategies."""
+"""Abstract base class and shared logic for inducing strategies."""
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Optional
+from __future__ import annotations
 
-import torch
-import torch.nn as nn
+import abc
 
-from hipposvgp.rff import SpectralSample
+import equinox as eqx
+import jax.numpy as jnp
+from jaxtyping import Array, Float, PRNGKeyArray
 
-
-@dataclass
-class KernelMatrices:
-    """Container for all kernel matrices needed by the model.
-
-    Attributes:
-        Kuu: [M, M] inducing-inducing kernel matrix
-        Kfu: [N, M] data-inducing kernel matrix
-        Kff: [N, N] data-data kernel matrix
-        Kuu_old: [M, M'] cross kernel between new and old inducing (None if no prior)
-        Kold_old: [M', M'] old inducing kernel from previous task (None if no prior)
-        Kold_old_newk: [M', M'] old inducing re-evaluated with new kernel (None if no prior)
-        Z: [2R, M] feature matrix (for state transfer)
-    """
-
-    Kuu: torch.Tensor
-    Kfu: torch.Tensor
-    Kff: torch.Tensor
-    Kuu_old: Optional[torch.Tensor] = None
-    Kold_old: Optional[torch.Tensor] = None
-    Kold_old_newk: Optional[torch.Tensor] = None
-    Z: Optional[torch.Tensor] = None
+from hipposvgp.kernels.base import Kernel
+from hipposvgp.types import KernelMatrices, SpectralSample
 
 
-class InducingStrategy(nn.Module, ABC):
-    """Base class for inducing point strategies.
+class InducingStrategy(eqx.Module):
+    """Base class for inducing point strategies."""
 
-    Subclasses define how to compute Z (inducing features) and
-    the resulting kernel matrices Kuu, Kfu, Kff.
-    """
+    inducing_size: int = eqx.field(static=True)
 
-    def __init__(self, inducing_size):
-        super().__init__()
-        self.inducing_size = inducing_size
-
-    @abstractmethod
+    @abc.abstractmethod
     def compute_kernel_matrices(
         self,
-        kernel,
-        X,
+        kernel: Kernel,
+        X: Float[Array, "N D"],
         *,
-        Z_old=None,
-        Kaa_old=None,
-        flag_update_kernel=True,
-        sample=None,
-    ):
-        """Compute all kernel matrices for the ELBO.
+        Z_old: Float[Array, "TwoR M"] | None = None,
+        Kaa_old: Float[Array, "M M"] | None = None,
+        flag_update_kernel: bool = True,
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> tuple[KernelMatrices, SpectralSample | None]:
+        """Compute all kernel matrices for the ELBO."""
+        ...
 
-        Args:
-            kernel: Kernel module
-            X: [N, D] training data
-            Z_old: [2R, M'] previous Z feature matrix (or None)
-            Kaa_old: [M', M'] previous Kuu matrix (or None)
-            flag_update_kernel: if True, recompute Z from scratch
-            sample: optional fixed SpectralSample (for RFF-based strategies)
-
-        Returns:
-            (KernelMatrices, SpectralSample) tuple
-        """
-
-    @abstractmethod
-    def compute_prediction_matrices(self, kernel, Xnew, sample=None):
-        """Compute kernel matrices for prediction.
-
-        Args:
-            kernel: Kernel module
-            Xnew: [N*, D] test data
-            sample: optional fixed SpectralSample (for RFF-based strategies)
-
-        Returns:
-            (Kuu, Kfu_new, Kff_new) tuple
-        """
+    @abc.abstractmethod
+    def compute_prediction_matrices(
+        self,
+        kernel: Kernel,
+        Xnew: Float[Array, "Ns D"],
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> tuple[Float[Array, "M M"], Float[Array, "Ns M"], Float[Array, "Ns Ns"]]:
+        """Compute kernel matrices for prediction."""
+        ...
 
 
-class RFFInducingBase(InducingStrategy, ABC):
+class RFFInducingBase(InducingStrategy):
     """Base class for RFF-based inducing strategies (HiPPO-ODE and Analytic).
 
     Provides shared logic for spectral sample resolution, time window management,
     and kernel matrix assembly from Z features.
-    Subclasses implement ``_compute_Z`` and ``_compute_Z_f``.
     """
 
-    def __init__(
+    rff_sample_size: int = eqx.field(static=True)
+    start: float = eqx.field(static=True)
+    end: float = eqx.field(static=True)
+    num_discrete_steps: int = eqx.field(static=True)
+    prev_discrete_steps: int = eqx.field(static=True)
+
+    def with_time_window(
         self,
-        inducing_size,
-        device,
-        rff_sample_size,
-        start,
-        end,
-        num_discrete_steps,
-        prev_discrete_steps=0,
-        dtype=torch.float64,
+        new_start: float,
+        new_end: float,
+        new_n_steps: int,
+        new_prev_steps: int,
     ):
-        super().__init__(inducing_size)
-        self.device = device
-        self.dtype = dtype
-        self.rff_sample_size = rff_sample_size
-        self.start = start
-        self.end = end
-        self.maxT = end - start
-        self.num_discrete_steps = num_discrete_steps
-        self.prev_discrete_steps = int(prev_discrete_steps)
+        """Return a new instance with updated time window."""
+        return eqx.tree_at(
+            lambda s: (s.start, s.end, s.num_discrete_steps, s.prev_discrete_steps),
+            self,
+            (new_start, new_end, new_n_steps, new_prev_steps),
+        )
 
-    def update_time_window(self, new_start, new_end, new_n_steps, new_prev_steps):
-        """Update the time window for the next task."""
-        self.start = new_start
-        self.end = new_end
-        self.maxT = new_end - new_start
-        self.num_discrete_steps = new_n_steps
-        self.prev_discrete_steps = int(new_prev_steps)
+    @property
+    def maxT(self) -> float:
+        return self.end - self.start
 
-    def _get_time_stamps(self):
-        return self.start + (self.maxT / self.num_discrete_steps) * (
-            1
-            + torch.arange(
-                self.num_discrete_steps, dtype=self.dtype, device=self.device
-            )
-        ).unsqueeze(1)
+    def _get_time_stamps(self) -> Float[Array, "L 1"]:
+        """Evenly spaced timestamps in [start, end]."""
+        step = self.maxT / self.num_discrete_steps
+        return (
+            self.start
+            + step
+            * (1 + jnp.arange(self.num_discrete_steps, dtype=jnp.float64))[:, None]
+        )
 
-    def _resolve_spectral_sample(self, kernel, sample):
+    def _resolve_spectral_sample(
+        self,
+        kernel: Kernel,
+        sample: SpectralSample | None,
+        key: PRNGKeyArray | None = None,
+    ) -> SpectralSample:
         """Resolve spectral sample: use provided sample, or sample from kernel."""
-        if sample is None:
-            return kernel.sample_from_spectral(self.rff_sample_size)
-        return sample
+        if sample is not None:
+            return sample
+        return kernel.sample_from_spectral(self.rff_sample_size, key)
 
-    @abstractmethod
-    def _compute_Z(self, sample, Z_old=None, flag_update_kernel=True):
-        """Compute Z matrix from spectral sample.
+    @abc.abstractmethod
+    def _compute_Z(
+        self,
+        sample: SpectralSample,
+        Z_old: Float[Array, "TwoR M"] | None = None,
+        flag_update_kernel: bool = True,
+    ) -> tuple[Float[Array, "TwoR M"], Float[Array, "TwoR M"] | None]:
+        """Compute Z matrix from spectral sample."""
+        ...
 
-        Returns:
-            (Z, Z_old_newk): current Z [2R, M] and old Z re-evaluated or None
-        """
-
-    @abstractmethod
-    def _compute_Z_f(self, sample, X):
-        """Compute RFF features for data points.
-
-        Returns:
-            Z_f: [N, 2R] data feature matrix
-        """
+    @abc.abstractmethod
+    def _compute_Z_f(
+        self, sample: SpectralSample, X: Float[Array, "N D"]
+    ) -> Float[Array, "N TwoR"]:
+        """Compute RFF features for data points."""
+        ...
 
     def _assemble_kernel_matrices(
-        self, sf, Z, Z_f, Z_old_newk, Z_old, Kaa_old, flag_update_kernel
-    ):
+        self,
+        sf: Float[Array, ""],
+        Z: Float[Array, "TwoR M"],
+        Z_f: Float[Array, "N TwoR"],
+        Z_old_newk: Float[Array, "TwoR M"] | None,
+        Z_old: Float[Array, "TwoR M"] | None,
+        Kaa_old: Float[Array, "M M"] | None,
+        flag_update_kernel: bool,
+    ) -> KernelMatrices:
         """Assemble kernel matrices from Z features."""
         Kuu = sf * (Z.T @ Z)
         Kfu = sf * (Z_f @ Z)
@@ -187,30 +156,37 @@ class RFFInducingBase(InducingStrategy, ABC):
 
     def compute_kernel_matrices(
         self,
-        kernel,
-        X,
+        kernel: Kernel,
+        X: Float[Array, "N D"],
         *,
-        Z_old=None,
-        Kaa_old=None,
-        flag_update_kernel=True,
-        sample=None,
-    ):
-        sample = self._resolve_spectral_sample(kernel, sample)
+        Z_old: Float[Array, "TwoR M"] | None = None,
+        Kaa_old: Float[Array, "M M"] | None = None,
+        flag_update_kernel: bool = True,
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> tuple[KernelMatrices, SpectralSample]:
+        sample = self._resolve_spectral_sample(kernel, sample, key)
         Z, Z_old_newk = self._compute_Z(
             sample, Z_old=Z_old, flag_update_kernel=flag_update_kernel
         )
         Z_f = self._compute_Z_f(sample, X)
-        sf = torch.exp(kernel.log_sf)
+        sf = jnp.exp(kernel.log_sf).squeeze()
         km = self._assemble_kernel_matrices(
             sf, Z, Z_f, Z_old_newk, Z_old, Kaa_old, flag_update_kernel
         )
         return km, sample
 
-    def compute_prediction_matrices(self, kernel, Xnew, sample=None):
-        sample = self._resolve_spectral_sample(kernel, sample)
+    def compute_prediction_matrices(
+        self,
+        kernel: Kernel,
+        Xnew: Float[Array, "Ns D"],
+        sample: SpectralSample | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> tuple[Float[Array, "M M"], Float[Array, "Ns M"], Float[Array, "Ns Ns"]]:
+        sample = self._resolve_spectral_sample(kernel, sample, key)
         Z, _ = self._compute_Z(sample)
         Z_f = self._compute_Z_f(sample, Xnew)
-        sf = torch.exp(kernel.log_sf)
+        sf = jnp.exp(kernel.log_sf).squeeze()
         Kuu = sf * (Z.T @ Z)
         Kfu_new = sf * (Z_f @ Z)
         Kff_new = sf * (Z_f @ Z_f.T)
