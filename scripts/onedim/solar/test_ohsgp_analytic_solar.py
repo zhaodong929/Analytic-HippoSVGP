@@ -2,6 +2,7 @@ import argparse
 import math
 import os
 import time
+import traceback
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,6 +13,14 @@ from scipy import special as ss
 from hipposvgp.hippo import HiPPO_LegS
 from hipposvgp.sgpr import HIPPO_OSGPR_VFE, HIPPO_SVGP
 from scripts.onedim.solar.baseline import FullGP
+
+ANALYTIC_FIXED_CFG = {
+    "globalstart_wt_mode": "w",
+    "analytic_psd_project": True,
+    "analytic_robust_cholesky": True,
+    "analytic_symmetrize": True,
+    "analytic_base_jitter": 1e-6,
+}
 
 
 def setup():
@@ -98,11 +107,18 @@ def _analytic_get_Z_bessel(model, w):
         dtype=model.dtype,
         device=model.device,
     )
+    wt_mode = str(getattr(model, "globalstart_wt_mode", "w"))
+    if wt_mode == "none":
+        phase_origin_term = torch.zeros_like(w)
+    elif wt_mode == "w_eff":
+        phase_origin_term = w_eff * phase_origin
+    else:
+        phase_origin_term = w * phase_origin
 
     L = torch.arange(model.inducing_size, dtype=model.dtype, device=model.device)
     j = _spherical_bessel_j(model.inducing_size - 1, kappa).squeeze(1)
     pref = torch.sqrt(2.0 * L + 1.0)[:, None]
-    phase = w * phase_origin + kappa + L[:, None] * math.pi / 2.0
+    phase = phase_origin_term + kappa + L[:, None] * math.pi / 2.0
     z_sin = pref * j * torch.sin(phase)
     z_cos = pref * j * torch.cos(phase)
     scale = (1.0 / rff_sample_size) ** 0.5
@@ -125,37 +141,195 @@ def _analytic_feature(w, X):
 
 
 class HIPPO_SVGP_ANALYTIC(HIPPO_SVGP):
+    def __init__(self, *args, enable_analytic_runtime_guard=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._enable_analytic_runtime_guard = enable_analytic_runtime_guard
+        self._forbidden_call_counts = {
+            "kernel_forward": 0,
+            "hippo_forward": 0,
+            "exact_kfu": 0,
+        }
+        self._active_w = None
+        self._original_kernel_forward = self.Kernel.forward
+        self._original_hippo_forward = self.hippo.forward
+        if self._enable_analytic_runtime_guard:
+            self.Kernel.forward = self._guarded_kernel_forward
+            self.hippo.forward = self._guarded_hippo_forward
+
+    def _runtime_stack(self):
+        return "".join(traceback.format_stack(limit=20))
+
+    def _raise_forbidden_runtime_path(self, path_name):
+        raise RuntimeError(
+            "[HIPPO_SVGP_ANALYTIC] Forbidden exact/ODE path accessed: "
+            f"{path_name}. Analytic backend must not call hippo()/odeint()/exact Kernel.\n"
+            f"Call stack:\n{self._runtime_stack()}"
+        )
+
+    def _guarded_kernel_forward(self, *args, **kwargs):
+        self._forbidden_call_counts["kernel_forward"] += 1
+        self._raise_forbidden_runtime_path("Kernel.forward (exact kernel)")
+
+    def _guarded_hippo_forward(self, *args, **kwargs):
+        self._forbidden_call_counts["hippo_forward"] += 1
+        self._raise_forbidden_runtime_path("hippo.forward (HiPPO/ODE path)")
+
+    def get_forbidden_call_counts(self):
+        return dict(self._forbidden_call_counts)
+
+    def _as_input_tensor(self, X):
+        X = torch.as_tensor(X, dtype=self.dtype, device=self.device)
+        if X.ndim == 1:
+            X = X.unsqueeze(-1)
+        return X
+
+    def _as_w_tensor(self, w):
+        w = torch.as_tensor(w, dtype=self.dtype, device=self.device)
+        if w.ndim == 1:
+            w = w.unsqueeze(0)
+        return w
+
     def get_Z(self, w):
         return _analytic_get_Z(self, w)
 
     def Kuu_se(self, w, b=None, reducevar=True):
         if not reducevar:
-            return super().Kuu_se(w, b=b, reducevar=reducevar)
+            self._raise_forbidden_runtime_path("Kuu_se(reducevar=False) -> super().Kuu_se")
         Z, _ = self.get_Z(w)
         return Z.T @ Z
 
     def KfuKff_rff_se(self, w, X, b=None, reducevar=True):
         if not reducevar:
-            return super().KfuKff_rff_se(w, X, b=b, reducevar=reducevar)
+            self._raise_forbidden_runtime_path(
+                "KfuKff_rff_se(reducevar=False) -> super().KfuKff_rff_se"
+            )
         Z, _ = self.get_Z(w)
         Z_f = _analytic_feature(w, X)
         Kfu = Z_f @ Z
         Kff = Z_f @ Z_f.T
         return Kff, Kfu
 
+    def Kfu(self, X, w=None, b=None, reducevar=True):
+        if self.kernel_type != "se":
+            self._forbidden_call_counts["exact_kfu"] += 1
+            self._raise_forbidden_runtime_path("Kfu(non-se) -> exact/ODE backend")
+        if not reducevar:
+            self._forbidden_call_counts["exact_kfu"] += 1
+            self._raise_forbidden_runtime_path("Kfu(reducevar=False) -> non-analytic path")
+        if w is None:
+            if self._active_w is None:
+                self._forbidden_call_counts["exact_kfu"] += 1
+                raise RuntimeError(
+                    "[HIPPO_SVGP_ANALYTIC] Kfu requires analytic spectral samples `w` "
+                    "(either pass `w` directly or call from pred/ELBO/qb_opt)."
+                )
+            w = self._active_w
+        X = self._as_input_tensor(X)
+        _, Kfu = self.KfuKff_rff_se(self._as_w_tensor(w), X, b=b, reducevar=True)
+        return torch.exp(self.Kernel.log_sf) * Kfu
+
+    def ELBO(self, reducevar=True):
+        if self.kernel_type != "se":
+            raise NotImplementedError
+        if not reducevar:
+            self._raise_forbidden_runtime_path("ELBO(reducevar=False) -> non-analytic path")
+
+        w = self._as_w_tensor(self.Kernel.sample_from_spectral(self.rff_sample_size))
+        self._active_w = w
+        try:
+            Kuu = torch.exp(self.Kernel.log_sf) * self.Kuu_se(w, b=None, reducevar=True)
+            Kfu = self.Kfu(self.X, w=w, b=None, reducevar=True)
+            Kff, _ = self.KfuKff_rff_se(w, self.X, b=None, reducevar=True)
+            Kff = torch.exp(self.Kernel.log_sf) * Kff
+        finally:
+            self._active_w = None
+
+        N_input = self.X.shape[0]
+        const = -0.5 * N_input * torch.log(
+            torch.tensor(2 * np.pi, dtype=self.dtype, device=self.device)
+        )
+
+        eye = torch.eye(self.inducing_size, device=self.device, dtype=self.dtype)
+        M_aux = Kuu + torch.exp(-self.log_noise) * (Kfu.T @ Kfu)
+        chol_M_aux = torch.linalg.cholesky(
+            M_aux + self.jitter * torch.mean(torch.diag(M_aux)).detach() * eye
+        )
+        chol_Kuu = torch.linalg.cholesky(
+            Kuu + self.jitter * torch.mean(torch.diag(Kuu)).detach() * eye
+        )
+        log_det = (
+            -0.5 * (N_input * self.log_noise)
+            - torch.sum(torch.log(torch.diag(chol_M_aux)))
+            + torch.sum(torch.log(torch.diag(chol_Kuu)))
+        )
+
+        quadratic = -0.5 * torch.exp(-self.log_noise) * self.y.T @ self.y
+        v = torch.linalg.solve_triangular(chol_M_aux, Kfu.T @ self.y, upper=False)
+        quadratic += 0.5 * torch.exp(-2 * self.log_noise) * v.T @ v
+
+        b = torch.linalg.solve_triangular(chol_Kuu, Kfu.T, upper=False)
+        trace_inner = torch.sum(torch.diag(Kff)) - torch.sum(b.pow(2))
+        trace_inner = torch.clamp(trace_inner, min=0.0)
+        trace = -0.5 * torch.exp(-self.log_noise) * trace_inner
+        return const + log_det + quadratic + trace
+
+    def pred(self, X, w, flag_noise=True, flag_diag=True, reducevar=True):
+        X = self._as_input_tensor(X)
+        if self.kernel_type != "se":
+            raise NotImplementedError
+        if not reducevar:
+            self._raise_forbidden_runtime_path("pred(reducevar=False) -> non-analytic path")
+
+        w = self._as_w_tensor(w)
+        self._active_w = w
+        try:
+            Kuu = torch.exp(self.Kernel.log_sf) * self.Kuu_se(w, b=None, reducevar=True)
+            Kff, Kfu = self.KfuKff_rff_se(w, X, b=None, reducevar=True)
+            Kff = torch.exp(self.Kernel.log_sf) * Kff
+            Kfu = torch.exp(self.Kernel.log_sf) * Kfu
+            Kfu_train = self.Kfu(self.X, w=w, b=None, reducevar=True)
+        finally:
+            self._active_w = None
+
+        eye_u = torch.eye(self.inducing_size, device=self.device, dtype=self.dtype)
+        chol_Kuu = torch.linalg.cholesky(
+            Kuu + self.jitter * torch.mean(torch.diag(Kuu)).detach() * eye_u
+        )
+        M_aux = Kuu + torch.exp(-self.log_noise) * (Kfu_train.T @ Kfu_train)
+        chol_M_aux = torch.linalg.cholesky(
+            M_aux + self.jitter * torch.mean(torch.diag(M_aux)).detach() * eye_u
+        )
+
+        v1 = torch.linalg.solve_triangular(chol_M_aux, Kfu.T, upper=False)
+        v2 = torch.linalg.solve_triangular(chol_M_aux, Kfu_train.T @ self.y, upper=False)
+        mean = torch.exp(-self.log_noise) * v1.T @ v2
+
+        v3 = torch.linalg.solve_triangular(chol_Kuu, Kfu.T, upper=False)
+        cov = Kff - v3.T @ v3 + v1.T @ v1
+        cov = 0.5 * (cov + cov.T)
+
+        if flag_noise:
+            cov += torch.exp(self.log_noise) * torch.eye(cov.shape[0], device=self.device, dtype=self.dtype)
+        if flag_diag:
+            return mean, torch.diag(cov)
+        return mean, cov
+
     def qb_opt(self, w):
         if self.kernel_type != "se":
-            return super().qb_opt(w)
+            raise NotImplementedError
 
-        Kuu = self.Kuu_se(w, b=None, reducevar=True)
-        Kuu = torch.exp(self.Kernel.log_sf) * Kuu
+        w = self._as_w_tensor(w)
+        Kuu = torch.exp(self.Kernel.log_sf) * self.Kuu_se(w, b=None, reducevar=True)
         Kuu += self.jitter * torch.mean(torch.diag(Kuu)).detach() * torch.eye(
             self.inducing_size, device=self.device, dtype=self.dtype
         )
 
         Kfu = Kuu.clone()
-        _, Kfu_train = self.KfuKff_rff_se(w, self.X, b=None, reducevar=True)
-        Kfu_train = torch.exp(self.Kernel.log_sf) * Kfu_train
+        self._active_w = w
+        try:
+            Kfu_train = self.Kfu(self.X, w=w, b=None, reducevar=True)
+        finally:
+            self._active_w = None
 
         M_aux = Kuu + torch.exp(-self.log_noise) * (Kfu_train.T @ Kfu_train)
         chol_M_aux = torch.linalg.cholesky(
@@ -173,7 +347,13 @@ class HIPPO_SVGP_ANALYTIC(HIPPO_SVGP):
 
 
 class HIPPO_OSGPR_VFE_ANALYTIC(HIPPO_OSGPR_VFE):
+    def _cfg_bool(self, name, default):
+        return bool(getattr(self, name, default))
+
     def _robust_cholesky(self, matrix, base_jitter=1e-6, retries=8):
+        if not self._cfg_bool("analytic_robust_cholesky", True):
+            return torch.linalg.cholesky(matrix)
+        base_jitter = float(getattr(self, "analytic_base_jitter", base_jitter))
         eye = torch.eye(matrix.shape[0], dtype=matrix.dtype, device=matrix.device)
         diag_mean = torch.mean(torch.diag(matrix)).detach()
         if not torch.isfinite(diag_mean) or diag_mean <= 0:
@@ -187,7 +367,12 @@ class HIPPO_OSGPR_VFE_ANALYTIC(HIPPO_OSGPR_VFE):
         return torch.linalg.cholesky(matrix + 1e-3 * diag_mean * eye)
 
     def _project_psd(self, matrix, floor_scale=1e-8):
-        sym = 0.5 * (matrix + matrix.T)
+        if self._cfg_bool("analytic_symmetrize", True):
+            sym = 0.5 * (matrix + matrix.T)
+        else:
+            sym = matrix
+        if not self._cfg_bool("analytic_psd_project", True):
+            return sym
         evals, evecs = torch.linalg.eigh(sym)
         diag_abs_mean = torch.mean(torch.abs(torch.diag(sym))).detach()
         floor = floor_scale * diag_abs_mean
@@ -238,8 +423,12 @@ class HIPPO_OSGPR_VFE_ANALYTIC(HIPPO_OSGPR_VFE):
         Kbb = torch.exp(self.Kernel.log_sf) * Kbb
         Kba = torch.exp(self.Kernel.log_sf) * Kba
         Kaa_cur = torch.exp(self.Kernel.log_sf) * Kaa_cur
-        Kbb = self.add_jitter(0.5 * (Kbb + Kbb.T))
-        Kaa_cur = self.add_jitter(0.5 * (Kaa_cur + Kaa_cur.T))
+        if self._cfg_bool("analytic_symmetrize", True):
+            Kbb = self.add_jitter(0.5 * (Kbb + Kbb.T))
+            Kaa_cur = self.add_jitter(0.5 * (Kaa_cur + Kaa_cur.T))
+        else:
+            Kbb = self.add_jitter(Kbb)
+            Kaa_cur = self.add_jitter(Kaa_cur)
         Kaa = self.add_jitter(self._project_psd(self.Kaa_old))
 
         err = self.y
@@ -266,7 +455,9 @@ class HIPPO_OSGPR_VFE_ANALYTIC(HIPPO_OSGPR_VFE):
         d3 = Lainv_Kab_Lbinv.T @ Lainv_Kab_Lbinv
 
         D = torch.eye(Mb, device=self.device, dtype=self.dtype) + d1 + d2 - d3
-        D = self.add_jitter(0.5 * (D + D.T))
+        if self._cfg_bool("analytic_symmetrize", True):
+            D = 0.5 * (D + D.T)
+        D = self.add_jitter(D)
         LD = self._robust_cholesky(D)
 
         LDinv_Lbinv_c = torch.linalg.solve_triangular(LD, Lbinv_c, upper=False)
@@ -411,6 +602,7 @@ if __name__ == "__main__":
         ).to(device)
         model1.analytic_z_type = args.analytic_z_type
         model1.phase_origin = phase_origin
+        model1.globalstart_wt_mode = ANALYTIC_FIXED_CFG["globalstart_wt_mode"]
         prev_discrete_steps += num_discrete_steps
 
         model1.log_noise = nn.Parameter(
@@ -516,6 +708,11 @@ if __name__ == "__main__":
             ).to(device)
             cur_model.analytic_z_type = args.analytic_z_type
             cur_model.phase_origin = phase_origin
+            cur_model.globalstart_wt_mode = ANALYTIC_FIXED_CFG["globalstart_wt_mode"]
+            cur_model.analytic_psd_project = ANALYTIC_FIXED_CFG["analytic_psd_project"]
+            cur_model.analytic_robust_cholesky = ANALYTIC_FIXED_CFG["analytic_robust_cholesky"]
+            cur_model.analytic_symmetrize = ANALYTIC_FIXED_CFG["analytic_symmetrize"]
+            cur_model.analytic_base_jitter = ANALYTIC_FIXED_CFG["analytic_base_jitter"]
             prev_discrete_steps += num_discrete_steps
 
             cur_model.log_noise = nn.Parameter(
