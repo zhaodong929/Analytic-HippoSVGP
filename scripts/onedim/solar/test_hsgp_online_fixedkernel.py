@@ -331,3 +331,4 @@ if __name__ == "__main__":
 
         end_t = time.time()
         print("M={}, time={:.3f}s".format(args.inducing_size, end_t - start_t))
+        print("[Train] total_time_sec={:.3f}".format(end_t - start_t))

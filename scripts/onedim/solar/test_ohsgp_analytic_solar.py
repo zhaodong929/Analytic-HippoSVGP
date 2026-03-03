@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from scipy import special as ss
 
 from hipposvgp.hippo import HiPPO_LegS
 from hipposvgp.sgpr import HIPPO_OSGPR_VFE, HIPPO_SVGP
@@ -26,6 +25,13 @@ ANALYTIC_FIXED_CFG = {
 def setup():
     parser = argparse.ArgumentParser("OHSGPR Analytic (fixed-kernel style)")
     parser.add_argument("--seed_num", type=int, default=0)
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Execution device. 'auto' uses cuda if available, otherwise cpu.",
+    )
     parser.add_argument("--data", type=str, default="solar")
     parser.add_argument("--kernel_type", type=str, default="se")
     parser.add_argument("--inducing_size", type=int, default=100)
@@ -70,30 +76,82 @@ def setup():
         choices=["global_start", "zero"],
         help="Phase origin used in analytic spherical-Bessel construction.",
     )
+    parser.add_argument(
+        "--spectral_sample_device",
+        type=str,
+        default="cpu",
+        choices=["cpu", "match"],
+        help=(
+            "Device used to sample spectral frequencies w. "
+            "'cpu' improves cross-device reproducibility; 'match' keeps legacy behavior."
+        ),
+    )
     return parser.parse_args()
 
 
 def _spherical_bessel_j(lmax, x):
-    # x: [1, R]
-    x_np = x.detach().cpu().numpy()
-    x_abs = np.abs(x_np)
-    x_safe = np.where(x_abs > 1e-8, x_abs, 1.0)
+    """Pure-torch spherical Bessel j_0..j_lmax via stable Miller recurrence."""
+    eps = 1e-8
+    x_abs = x.abs()
+    mask_nonzero = x_abs > eps
+    x_safe = torch.where(mask_nonzero, x_abs, torch.full_like(x_abs, eps))
 
-    L = np.arange(lmax + 1, dtype=np.float64).reshape(-1, 1, 1)
-    nu = L + 0.5
-    pref = np.sqrt(np.pi / (2.0 * x_safe))
-    jv = ss.jv(nu, x_safe)
-    j = pref * jv
+    max_x = float(x_abs.max().detach().cpu())
+    n_start = int(lmax + max_x + 50)
 
-    parity = np.where((L % 2) == 0, 1.0, -1.0)
-    sign_factor = np.where(x_np >= 0.0, 1.0, parity)
-    j = j * sign_factor
+    out_shape = (lmax + 1,) + tuple(x.shape)
+    f = torch.zeros(out_shape, device=x.device, dtype=x.dtype)
+    log_s = torch.zeros(out_shape, device=x.device, dtype=x.dtype)
 
-    j0 = np.zeros_like(j)
-    j0[0] = 1.0
-    j = np.where(x_abs > 1e-8, j, j0)
+    f_np1 = torch.zeros_like(x_safe)
+    f_n = torch.ones_like(x_safe)
+    cur_log_s = torch.zeros_like(x_safe)
 
-    return torch.tensor(j, dtype=x.dtype, device=x.device)
+    if x.dtype == torch.float64:
+        large_thr = 1e100
+        small_thr = 1e-100
+    else:
+        large_thr = 1e15
+        small_thr = 1e-15
+
+    for n in range(n_start, 0, -1):
+        f_nm1 = ((2 * n + 1) / x_safe) * f_n - f_np1
+
+        scale = torch.maximum(torch.maximum(f_nm1.abs(), f_n.abs()), f_np1.abs())
+        scale = torch.where(
+            scale > large_thr,
+            scale,
+            torch.where(scale < small_thr, torch.full_like(scale, small_thr), torch.ones_like(scale)),
+        )
+
+        f_nm1 = f_nm1 / scale
+        f_n = f_n / scale
+        f_np1 = f_np1 / scale
+        cur_log_s = cur_log_s + torch.log(scale)
+
+        if n - 1 <= lmax:
+            f[n - 1] = f_nm1
+            log_s[n - 1] = cur_log_s
+        f_np1 = f_n
+        f_n = f_nm1
+
+    true_j0 = torch.sin(x_safe) / x_safe
+    scale0 = true_j0 / (f[0] + 1e-300)
+    corr = torch.exp(torch.clamp(log_s - log_s[0].unsqueeze(0), min=-700.0, max=700.0))
+    j = f * corr * scale0.unsqueeze(0)
+
+    parity = torch.where(
+        (torch.arange(lmax + 1, device=x.device) % 2) == 0,
+        torch.ones(lmax + 1, device=x.device, dtype=x.dtype),
+        -torch.ones(lmax + 1, device=x.device, dtype=x.dtype),
+    ).view(-1, *([1] * x.ndim))
+    sign_is_pos = (x >= 0).unsqueeze(0)
+    j = torch.where(sign_is_pos, j, j * parity)
+
+    j_at_0 = torch.zeros_like(j)
+    j_at_0[0] = 1.0
+    j = torch.where(mask_nonzero.unsqueeze(0), j, j_at_0)
+    return j
 
 
 def _analytic_get_Z_bessel(model, w):
@@ -138,6 +196,16 @@ def _analytic_get_Z(model, w):
 def _analytic_feature(w, X):
     rff_sample_size = w.shape[1]
     return (1.0 / rff_sample_size) ** 0.5 * torch.cat([torch.sin(w * X), torch.cos(w * X)], 1)
+
+
+def _sample_w(model, num_rff, sample_device_mode="cpu"):
+    """Sample spectral frequencies with optional CPU anchoring for reproducibility."""
+    if sample_device_mode == "cpu" and model.kernel_type == "se":
+        log_ls_cpu = model.Kernel.log_ls.detach().to(device="cpu", dtype=model.dtype)
+        # Match legacy SE sampling path: torch.randn default dtype, then scale.
+        w_cpu = (1.0 / torch.exp(log_ls_cpu)) * torch.randn(num_rff, device="cpu")
+        return w_cpu.to(device=model.device, dtype=model.dtype).unsqueeze(0)
+    return model.Kernel.sample_from_spectral(num_rff).unsqueeze(0)
 
 
 class HIPPO_SVGP_ANALYTIC(HIPPO_SVGP):
@@ -502,9 +570,20 @@ def resolve_fixed_hypers(args, x, y, device):
 
 if __name__ == "__main__":
     args = setup()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device == "cpu":
+        device = torch.device("cpu")
+    elif args.device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("`--device cuda` requested but CUDA is not available.")
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[Device] using {device}")
+
     np.random.seed(args.seed_num)
     torch.manual_seed(args.seed_num)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed_num)
 
     os.makedirs(args.out_dir, exist_ok=True)
     metrics_path = os.path.join(args.out_dir, "metrics.csv")
@@ -618,7 +697,11 @@ if __name__ == "__main__":
             requires_grad=False,
         )
 
-        w = model1.Kernel.sample_from_spectral(args.rff_sample_size_qb).unsqueeze(0)
+        w = _sample_w(
+            model1,
+            args.rff_sample_size_qb,
+            sample_device_mode=args.spectral_sample_device,
+        )
 
         y_mean, y_cov = model1.pred(x_test, w=w)
         y_mean = y_mean.detach().cpu().numpy()

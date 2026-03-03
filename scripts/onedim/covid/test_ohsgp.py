@@ -15,6 +15,7 @@ import torch.nn as nn
 import os
 import argparse
 import math
+import time
 
 OUTPUT_DIR = None
 
@@ -116,7 +117,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     optimizer = Adam(model.parameters(), lr=lr)
 
     # Initialize the plot
-    pbar = range(5000)#num_epochs)
+    pbar = range(num_epochs)
 
     log = []
     for epoch in pbar:
@@ -409,6 +410,7 @@ if __name__ == '__main__':
     step_size = 2
     hippo = HiPPO_LegS(inducing_size, device)
     rff_sample_size = 1000
+    start_t = time.time()
 
     prev_model, prev_days_test, prev_deaths_test, prev_days_train, prev_deaths_train, w,\
          prev_discrete_steps, prev_end = train_task1(device, inducing_size, num_epochs, lr, step_size)
@@ -416,3 +418,4 @@ if __name__ == '__main__':
     for task_id in range(2, 6):
         prev_model, prev_days_test, prev_deaths_test, prev_days_train, prev_deaths_train, w, prev_discrete_steps, prev_end = train_nexttask(prev_model, prev_days_test, prev_deaths_test, prev_days_train, prev_deaths_train, \
                    device, task_id, inducing_size, num_epochs, lr, step_size, w, prev_discrete_steps, prev_end)
+    print(f"[Train] total_time_sec={time.time() - start_t:.3f}")

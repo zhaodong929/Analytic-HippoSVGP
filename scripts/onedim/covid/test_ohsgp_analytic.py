@@ -17,6 +17,7 @@ import os
 import argparse
 import math
 from contextlib import contextmanager
+import time
 
 OUTPUT_DIR = None
 
@@ -58,6 +59,19 @@ def setup():
         default='global_start',
         choices=['zero', 'global_start'],
         help='Analytic phase origin mode. global_start (default) enables w*phase_origin shift; use zero for legacy behavior.',
+    )
+    parser.add_argument(
+        '--bessel_backend',
+        type=str,
+        default='scipy',
+        choices=['scipy'],
+        help='Backend for spherical_bessel_j in analytic model (fixed to scipy).',
+    )
+    parser.add_argument(
+        '--num_epochs',
+        type=int,
+        default=5000,
+        help='Training epochs per task.',
     )
     args=parser.parse_args()
     return args
@@ -135,6 +149,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
         use_analytic_Z=True,
         phase_origin_mode=args.phase_origin_mode,
         phase_origin=torch.min(days_train).item() if args.phase_origin_mode == "global_start" else 0.0,
+        bessel_backend=args.bessel_backend,
     ).to(device)
 
     model_num = HIPPOOSVGP_NUM(
@@ -235,7 +250,7 @@ def train_task1(device, inducing_size, num_epochs, lr, step_size):
     optimizer = Adam(model.parameters(), lr=lr)
 
     # Initialize the plot
-    pbar = range(5000)#num_epochs)
+    pbar = range(num_epochs)
 
     log = []
     for epoch in pbar:
@@ -395,6 +410,7 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
         flag_update_kernel=False,
         phase_origin_mode=args.phase_origin_mode,
         phase_origin=getattr(prev_model, "phase_origin", 0.0),
+        bessel_backend=args.bessel_backend,
     ).to(device)
 
     if task_id == 2:
@@ -578,17 +594,25 @@ def train_nexttask(prev_model, days_test_list, deaths_test_list, prev_days_train
 if __name__ == '__main__':
     args = setup()
     seed_everything(args.seed_num)
-    OUTPUT_DIR = os.path.join(args.out_root, "models"+str(args.seed_num), args.phase_origin_mode)
+    OUTPUT_DIR = os.path.join(
+        args.out_root,
+        "models"+str(args.seed_num),
+        args.phase_origin_mode,
+        args.bessel_backend,
+    )
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     inducing_size = 15
-    num_epochs = 5000
+    num_epochs = args.num_epochs
     lr = 1e-2
     step_size = 2
     hippo = HiPPO_LegS(inducing_size, device)
     rff_sample_size = 1000
     print(f"[Analytic] phase_origin_mode={args.phase_origin_mode}")
+    print(f"[Analytic] bessel_backend={args.bessel_backend}")
+    print(f"[Train] num_epochs={num_epochs}")
     print(f"[Output] dir={OUTPUT_DIR}")
+    start_t = time.time()
 
     prev_model, prev_days_test, prev_deaths_test, prev_days_train, prev_deaths_train, w,\
          prev_discrete_steps, prev_end = train_task1(device, inducing_size, num_epochs, lr, step_size)
@@ -596,3 +620,4 @@ if __name__ == '__main__':
     for task_id in range(2, 6):
         prev_model, prev_days_test, prev_deaths_test, prev_days_train, prev_deaths_train, w, prev_discrete_steps, prev_end = train_nexttask(prev_model, prev_days_test, prev_deaths_test, prev_days_train, prev_deaths_train, \
                    device, task_id, inducing_size, num_epochs, lr, step_size, w, prev_discrete_steps, prev_end)
+    print(f"[Train] total_time_sec={time.time() - start_t:.3f}")
