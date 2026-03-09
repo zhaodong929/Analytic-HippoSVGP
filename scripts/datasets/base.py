@@ -2,19 +2,17 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Iterator, Optional
-
-import torch
+from typing import Any, Iterator, Optional
 
 
 @dataclass
 class TaskData:
     """Data for a single online learning task."""
 
-    X_train: torch.Tensor  # [N_train, D]
-    y_train: torch.Tensor  # [N_train, 1]
-    X_test: torch.Tensor  # [N_test, D]
-    y_test: torch.Tensor  # [N_test, 1]
+    X_train: Any  # [N_train, D]
+    y_train: Any  # [N_train, 1]
+    X_test: Any  # [N_test, D]
+    y_test: Any  # [N_test, 1]
     task_id: int
     metadata: Optional[dict] = None
 

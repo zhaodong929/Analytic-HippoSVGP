@@ -37,6 +37,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "spbessax" },
 ]
 
 [package.optional-dependencies]
@@ -58,6 +59,7 @@ requires-dist = [
     { name = "optax", specifier = ">=0.2" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "scipy", specifier = ">=1.14" },
+    { name = "spbessax", specifier = ">=0.1.4" },
 ]
 provides-extras = ["cuda12"]
 
@@ -1445,6 +1447,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
+]
+
+[[package]]
+name = "spbessax"
+version = "0.1.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "jax", version = "0.9.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/82/6c/9c28841c8c426b92d6785d98fac698d37c15ef03f3509e05a7698ba16b73/spbessax-0.1.4.tar.gz", hash = "sha256:863effe828ccda1d6245994f0d4972eecdede01911ad96f74b8decd2315a1488", size = 15518, upload-time = "2026-02-16T14:48:47.283Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f1/b3/adedc5aea589f1918b94b78b69213ab919900a3432470f104f8cc8bc2f68/spbessax-0.1.4-py3-none-any.whl", hash = "sha256:3b49b9426e466cb9dbc8e7d097d773052d1abd5509cb3ad066c075bf85675603", size = 13945, upload-time = "2026-02-16T14:48:45.927Z" },
 ]
 
 [[package]]

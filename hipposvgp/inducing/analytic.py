@@ -3,8 +3,10 @@
 Core contribution: closed-form Z matrix computation
 instead of numerical ODE integration.
 
-Spherical Bessel functions are implemented in pure JAX via recurrence
-relations with custom_jvp for correct gradient computation.
+Three backends for spherical Bessel functions:
+- "forward_recurrence": Pure JAX forward recurrence (unstable for high orders)
+- "scipy": scipy.special.jv via pure_callback + custom_jvp (stable, not JIT-native)
+- "spbessax": spbessax library with Cai's descending recurrence (stable, JIT-native)
 """
 
 from __future__ import annotations
@@ -15,11 +17,17 @@ import math
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
+import scipy.special
 from jaxtyping import Array, Float
 
 from hipposvgp.inducing.base import RFFInducingBase
 from hipposvgp.rff import rff_features
 from hipposvgp.types import SpectralSample
+
+# ---------------------------------------------------------------------------
+# Backend 1: Forward recurrence (original, unstable for n > x)
+# ---------------------------------------------------------------------------
 
 
 def _spherical_bessel_j_impl(
@@ -27,12 +35,7 @@ def _spherical_bessel_j_impl(
 ) -> Float[Array, "Lp1 ..."]:
     """Compute spherical Bessel j_0(x)...j_lmax(x) via forward recurrence.
 
-    j_0(x) = sin(x)/x
-    j_1(x) = sin(x)/x^2 - cos(x)/x
-    j_{n+1}(x) = (2n+1)/x * j_n(x) - j_{n-1}(x)
-
-    Handles x=0 boundary: j_0(0)=1, j_n(0)=0 for n>0.
-    Handles negative x: j_n(-x) = (-1)^n j_n(x).
+    WARNING: Numerically unstable for large lmax when |x| < lmax.
     """
     x_abs = jnp.abs(x)
     x_safe = jnp.where(x_abs > 1e-30, x_abs, jnp.ones_like(x_abs))
@@ -54,7 +57,9 @@ def _spherical_bessel_j_impl(
             j_curr = j1
             for n in range(1, lmax):
                 j_next = (2 * n + 1) / x_safe * j_curr - j_prev
-                j_next = jnp.where(x_abs > 1e-30, j_next, jnp.zeros_like(x_abs))
+                j_next = jnp.where(
+                    x_abs > 1e-30, j_next, jnp.zeros_like(x_abs)
+                )
                 results.append(j_next)
                 j_prev = j_curr
                 j_curr = j_next
@@ -69,11 +74,8 @@ def _spherical_bessel_j_impl(
     return result * sign
 
 
-def _make_spherical_bessel_j(lmax: int):
-    """Create a spherical Bessel function with lmax baked in as static.
-
-    Returns a function f(x) -> j[0..lmax](x) with correct custom JVP.
-    """
+def _make_spherical_bessel_j_recurrence(lmax: int):
+    """Forward recurrence backend with custom_jvp."""
 
     @jax.custom_jvp
     def bessel_fn(x):
@@ -84,7 +86,6 @@ def _make_spherical_bessel_j(lmax: int):
         (x,) = primals
         (x_dot,) = tangents
 
-        # Compute j_0...j_{lmax+1} for the derivative formula
         j_extended = _spherical_bessel_j_impl(lmax + 1, x)
         j = j_extended[: lmax + 1]
 
@@ -93,9 +94,7 @@ def _make_spherical_bessel_j(lmax: int):
         shape = (lmax + 1,) + (1,) * x.ndim
         ns_shaped = ns.reshape(shape)
 
-        # dj_n/dx = (n/x)*j_n - j_{n+1}
         dj = ns_shaped / x_safe * j - j_extended[1 : lmax + 2]
-        # At x=0: dj_0/dx = 0, dj_1/dx = 1/3, dj_n/dx = 0 for n>1
         dj_at_zero = jnp.zeros_like(j)
         dj_at_zero = dj_at_zero.at[1].set(1.0 / 3.0)
         dj = jnp.where(jnp.abs(x) > 1e-30, dj, dj_at_zero)
@@ -105,21 +104,165 @@ def _make_spherical_bessel_j(lmax: int):
     return bessel_fn
 
 
-# Cache the factory to avoid re-creating closures
-@functools.lru_cache(maxsize=32)
-def spherical_bessel_j(lmax: int):
-    """Get a JIT-compatible spherical Bessel function for a given lmax.
+# ---------------------------------------------------------------------------
+# Backend 2: scipy.special.jv via pure_callback + custom_jvp
+# ---------------------------------------------------------------------------
 
-    Usage:
-        j = spherical_bessel_j(7)(x)  # j_0...j_7
+
+def _scipy_spherical_bessel_callback(
+    lmax: int, x: Float[Array, "..."]
+) -> Float[Array, "Lp1 ..."]:
+    """Compute j_0...j_lmax via scipy.special.jv using jax.pure_callback."""
+
+    def _impl(x_arr):
+        x_np = np.asarray(x_arr)
+        orig_shape = x_np.shape
+        x_flat = x_np.ravel()
+        N = len(x_flat)
+
+        ns = np.arange(lmax + 1)
+        nu = ns + 0.5  # half-integer orders
+
+        x_abs = np.abs(x_flat)
+        mask = x_abs > 1e-30
+        x_safe = np.where(mask, x_abs, 1.0)
+
+        # scipy.special.jv broadcasts: [L+1, 1] x [1, N] -> [L+1, N]
+        jv_vals = scipy.special.jv(nu[:, None], x_safe[None, :])
+        prefactor = np.sqrt(np.pi / (2 * x_safe))[None, :]
+        j_vals = prefactor * jv_vals
+
+        # Parity for negative x: j_n(-x) = (-1)^n j_n(x)
+        sign = np.where(
+            x_flat[None, :] >= 0, 1.0, ((-1.0) ** ns)[:, None]
+        )
+        j_vals *= sign
+
+        # x=0 boundary: j_0(0)=1, j_n(0)=0
+        j_at_zero = np.zeros((lmax + 1, N), dtype=np.float64)
+        j_at_zero[0] = 1.0
+        j_vals = np.where(mask[None, :], j_vals, j_at_zero)
+
+        return j_vals.reshape((lmax + 1,) + orig_shape)
+
+    result_shape = jax.ShapeDtypeStruct(
+        (lmax + 1,) + x.shape, x.dtype
+    )
+    return jax.pure_callback(_impl, result_shape, x)
+
+
+def _make_spherical_bessel_j_scipy(lmax: int):
+    """Scipy backend: stable for all orders, uses pure_callback."""
+
+    @jax.custom_jvp
+    def bessel_fn(x):
+        return _scipy_spherical_bessel_callback(lmax, x)
+
+    @bessel_fn.defjvp
+    def bessel_fn_jvp(primals, tangents):
+        (x,) = primals
+        (x_dot,) = tangents
+
+        # Compute j_0...j_{lmax+1} for the derivative formula
+        j_extended = _scipy_spherical_bessel_callback(lmax + 1, x)
+        j = j_extended[: lmax + 1]
+
+        x_safe = jnp.where(jnp.abs(x) > 1e-30, x, jnp.ones_like(x))
+        ns = jnp.arange(lmax + 1)
+        shape = (lmax + 1,) + (1,) * x.ndim
+        ns_shaped = ns.reshape(shape)
+
+        # dj_n/dx = (n/x)*j_n - j_{n+1}
+        dj = ns_shaped / x_safe * j - j_extended[1 : lmax + 2]
+        dj_at_zero = jnp.zeros_like(j)
+        dj_at_zero = dj_at_zero.at[1].set(1.0 / 3.0)
+        dj = jnp.where(jnp.abs(x) > 1e-30, dj, dj_at_zero)
+
+        return j, dj * x_dot
+
+    return bessel_fn
+
+
+# ---------------------------------------------------------------------------
+# Backend 3: spbessax (Cai's descending recurrence, stable + JIT-native)
+# ---------------------------------------------------------------------------
+
+
+def _make_spherical_bessel_j_spbessax(lmax: int):
+    """spbessax backend: stable for all orders, fully JIT-compatible."""
+    from spbessax.functions import create_j_l
+
+    j_l_fn = create_j_l(lmax, output_all=True, dtype=jnp.float64)
+
+    def bessel_fn(x):
+        x_abs = jnp.abs(x)
+        x_safe = jnp.where(x_abs > 1e-30, x_abs, jnp.ones_like(x_abs))
+
+        result = j_l_fn(x_safe)  # (*x_shape, lmax+1)
+        # Move order axis to front: (lmax+1, *x_shape)
+        result = jnp.moveaxis(result, -1, 0)
+
+        # Replace NaN with 0 (spbessax can produce NaN for small x + high order)
+        result = jnp.where(jnp.isnan(result), 0.0, result)
+
+        # x=0 boundary: j_0(0)=1, j_n(0)=0
+        at_zero = jnp.zeros_like(result)
+        at_zero = at_zero.at[0].set(1.0)
+        result = jnp.where(x_abs > 1e-30, result, at_zero)
+
+        # Parity for negative x: j_n(-x) = (-1)^n j_n(x)
+        ns = jnp.arange(lmax + 1)
+        shape = (lmax + 1,) + (1,) * x.ndim
+        parity = jnp.where(ns.reshape(shape) % 2 == 0, 1.0, -1.0)
+        sign = jnp.where(x >= 0, 1.0, parity)
+
+        return result * sign
+
+    return bessel_fn
+
+
+# ---------------------------------------------------------------------------
+# Unified factory with backend selection
+# ---------------------------------------------------------------------------
+
+_BACKEND_FACTORIES = {
+    "forward_recurrence": _make_spherical_bessel_j_recurrence,
+    "scipy": _make_spherical_bessel_j_scipy,
+    "spbessax": _make_spherical_bessel_j_spbessax,
+}
+
+BESSEL_BACKENDS = tuple(_BACKEND_FACTORIES.keys())
+
+
+@functools.lru_cache(maxsize=32)
+def spherical_bessel_j(lmax: int, backend: str = "spbessax"):
+    """Get a spherical Bessel function for a given lmax and backend.
+
+    Args:
+        lmax: Maximum order (returns j_0 through j_lmax).
+        backend: One of "forward_recurrence", "scipy", "spbessax".
+
+    Returns:
+        A function f(x) -> j[0..lmax](x) with shape (lmax+1, *x.shape).
     """
-    return _make_spherical_bessel_j(lmax)
+    if backend not in _BACKEND_FACTORIES:
+        raise ValueError(
+            f"Unknown Bessel backend: {backend!r}. "
+            f"Choose from {BESSEL_BACKENDS}"
+        )
+    return _BACKEND_FACTORIES[backend](lmax)
+
+
+# ---------------------------------------------------------------------------
+# AnalyticHiPPOInducing
+# ---------------------------------------------------------------------------
 
 
 class AnalyticHiPPOInducing(RFFInducingBase):
     """Closed-form Z matrix computation via spherical Bessel functions."""
 
     phase_origin: float = eqx.field(static=True, default=0.0)
+    bessel_backend: str = eqx.field(static=True, default="spbessax")
 
     def __init__(
         self,
@@ -130,6 +273,7 @@ class AnalyticHiPPOInducing(RFFInducingBase):
         num_discrete_steps: int,
         prev_discrete_steps: int = 0,
         phase_origin: float = 0.0,
+        bessel_backend: str = "spbessax",
     ):
         self.inducing_size = inducing_size
         self.rff_sample_size = rff_sample_size
@@ -138,6 +282,7 @@ class AnalyticHiPPOInducing(RFFInducingBase):
         self.num_discrete_steps = num_discrete_steps
         self.prev_discrete_steps = prev_discrete_steps
         self.phase_origin = phase_origin
+        self.bessel_backend = bessel_backend
 
     def _compute_Z_at_t(
         self,
@@ -153,8 +298,7 @@ class AnalyticHiPPOInducing(RFFInducingBase):
         L = jnp.arange(M, dtype=jnp.float64)
 
         # Spherical Bessel j_0...j_{M-1}(kappa)
-        # lmax is static (from inducing_size), so this is JIT-safe
-        bessel_fn = spherical_bessel_j(M - 1)
+        bessel_fn = spherical_bessel_j(M - 1, self.bessel_backend)
         j = bessel_fn(kappa)  # [M, 1, R]
         j = j.squeeze(1)  # [M, R]
 

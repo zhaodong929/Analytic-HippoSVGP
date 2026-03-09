@@ -19,7 +19,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 
 
 def _load_comparison_csv(results_dir):
@@ -53,15 +52,13 @@ def _discover_strategies(results_dir):
 
 
 def _load_predictions(results_dir, strategy):
-    """Load prediction tensors for a strategy."""
+    """Load prediction arrays for a strategy."""
     pred_dir = os.path.join(results_dir, strategy, "predictions")
     preds = {}
     for fname in sorted(os.listdir(pred_dir)):
-        if fname.endswith(".pt"):
-            task_id = int(fname.replace("task", "").replace(".pt", ""))
-            preds[task_id] = torch.load(
-                os.path.join(pred_dir, fname), map_location="cpu", weights_only=True,
-            )
+        if fname.endswith(".npz"):
+            task_id = int(fname.replace("task", "").replace(".npz", ""))
+            preds[task_id] = dict(np.load(os.path.join(pred_dir, fname)))
     return preds
 
 
@@ -106,9 +103,9 @@ def plot_posterior(results_dir, strategies=None):
             p = preds[tid]
 
             # Dense grid predictions
-            X_grid = p["X_grid"].squeeze().numpy()
-            mean = p["mean_grid"].squeeze().numpy()
-            var = p["var_grid"].squeeze().numpy()
+            X_grid = np.squeeze(p["X_grid"])
+            mean = np.squeeze(p["mean_grid"])
+            var = np.squeeze(p["var_grid"])
             std = np.sqrt(np.maximum(var, 1e-10))
 
             # Confidence band + mean
@@ -119,16 +116,16 @@ def plot_posterior(results_dir, strategies=None):
             ax.plot(X_grid, mean, color="C0", linewidth=1.5)
 
             # All seen training data
-            X_train_all = p["X_train_all"].squeeze().numpy()
-            y_train_all = p["y_train_all"].squeeze().numpy()
+            X_train_all = np.squeeze(p["X_train_all"])
+            y_train_all = np.squeeze(p["y_train_all"])
             ax.scatter(
                 X_train_all, y_train_all,
                 s=12, c="C1", alpha=0.4, zorder=2, label="Train (seen)",
             )
 
             # Current task training data (highlighted)
-            X_cur = p["X_train_current"].squeeze().numpy()
-            y_cur = p["y_train_current"].squeeze().numpy()
+            X_cur = np.squeeze(p["X_train_current"])
+            y_cur = np.squeeze(p["y_train_current"])
             ax.scatter(
                 X_cur, y_cur,
                 s=25, c="C3", edgecolors="black", linewidths=0.5,
@@ -136,16 +133,16 @@ def plot_posterior(results_dir, strategies=None):
             )
 
             # All seen test data
-            X_test_all = p["X_test_all"].squeeze().numpy()
-            y_test_all = p["y_test_all"].squeeze().numpy()
+            X_test_all = np.squeeze(p["X_test_all"])
+            y_test_all = np.squeeze(p["y_test_all"])
             ax.scatter(
                 X_test_all, y_test_all,
                 s=15, marker="x", c="C2", alpha=0.4, zorder=4, label="Test (seen)",
             )
 
             # Current task test data (highlighted)
-            X_test_cur = p["X_test_current"].squeeze().numpy()
-            y_test_cur = p["y_test_current"].squeeze().numpy()
+            X_test_cur = np.squeeze(p["X_test_current"])
+            y_test_cur = np.squeeze(p["y_test_current"])
             ax.scatter(
                 X_test_cur, y_test_cur,
                 s=30, marker="x", c="C2", linewidths=1.5,

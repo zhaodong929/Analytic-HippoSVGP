@@ -2,29 +2,31 @@
 
 import math
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
+from scipy.stats import norm
 
 
 def rmse(y_true, y_pred):
     """Root mean squared error."""
-    y_true = y_true.squeeze()
-    y_pred = y_pred.squeeze()
-    return torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
+    y_true = jnp.squeeze(y_true)
+    y_pred = jnp.squeeze(y_pred)
+    return float(jnp.sqrt(jnp.mean((y_pred - y_true) ** 2)))
 
 
 def r_squared(y_true, y_pred):
     """Coefficient of determination R^2."""
-    y_true = y_true.squeeze()
-    y_pred = y_pred.squeeze()
-    mse = torch.mean((y_pred - y_true) ** 2)
-    var = torch.mean((y_true - y_true.mean()) ** 2)
-    if var.item() > 0:
-        return (1 - mse / var).item()
+    y_true = jnp.squeeze(y_true)
+    y_pred = jnp.squeeze(y_pred)
+    mse = jnp.mean((y_pred - y_true) ** 2)
+    var = jnp.mean((y_true - jnp.mean(y_true)) ** 2)
+    if float(var) > 0:
+        return float(1 - mse / var)
     return float("nan")
 
 
-def nlpd(mean, var, y_test, likelihood=None, num_mc_samples=1000, device="cpu"):
+def nlpd(mean, var, y_test, likelihood=None, num_mc_samples=1000, key=None):
     """Negative log predictive density.
 
     If likelihood is provided, uses MC sampling through the likelihood.
@@ -36,36 +38,35 @@ def nlpd(mean, var, y_test, likelihood=None, num_mc_samples=1000, device="cpu"):
         y_test: [N, 1] test targets
         likelihood: optional likelihood module for non-Gaussian observation models
         num_mc_samples: MC samples for likelihood integration
-        device: torch device
+        key: JAX PRNG key (required when likelihood is provided)
 
     Returns:
         Scalar NLPD value.
     """
     if likelihood is not None and hasattr(likelihood, "log_prob"):
+        if key is None:
+            key = jax.random.PRNGKey(0)
         # MC integration through likelihood
-        std = torch.sqrt(var)
-        f_samples = mean + std * torch.randn(
-            num_mc_samples, var.shape[0], var.shape[1], device=device
+        std = jnp.sqrt(var)
+        f_samples = mean + std * jax.random.normal(
+            key, (num_mc_samples, var.shape[0], var.shape[1])
         )
-        y_expanded = y_test.unsqueeze(0).expand(num_mc_samples, -1, -1)
+        y_expanded = jnp.broadcast_to(y_test[None, :, :], (num_mc_samples,) + y_test.shape)
 
         log_probs = likelihood.log_prob(
             f_samples.reshape(-1, 1), y_expanded.reshape(-1, 1)
         ).reshape(num_mc_samples, -1)
         # log-mean-exp over samples
-        return -torch.logsumexp(log_probs, dim=0).mean().item() + np.log(
-            num_mc_samples
+        return float(
+            -jax.scipy.special.logsumexp(log_probs, axis=0).mean()
+            + np.log(num_mc_samples)
         )
     else:
         # Gaussian NLPD
-        return (
-            0.5
-            * (
-                torch.log(2 * math.pi * var)
-                + (y_test - mean) ** 2 / var
+        return float(
+            jnp.mean(
+                0.5 * (jnp.log(2 * math.pi * var) + (y_test - mean) ** 2 / var)
             )
-            .mean()
-            .item()
         )
 
 
@@ -87,29 +88,24 @@ def gaussian_ece(mean, var, y_test, levels=None):
     if levels is None:
         levels = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
-    mean = mean.squeeze()
-    var = var.squeeze()
-    y_test = y_test.squeeze()
-    std = torch.sqrt(var.clamp(min=1e-10))
+    mean = jnp.squeeze(mean)
+    var = jnp.squeeze(var)
+    y_test = jnp.squeeze(y_test)
+    std = jnp.sqrt(jnp.clip(var, a_min=1e-10))
 
     # Standardized residuals
     z = (y_test - mean) / std
 
     ece_list = []
     for conf in levels:
-        # For a Gaussian, the fraction within conf-level CI
-        # corresponds to |z| < quantile
-        from scipy.stats import norm
         q = norm.ppf(0.5 + conf / 2)
-        in_interval = (z.abs() < q).float().mean()
-        ece_list.append(abs(in_interval.item() - conf))
+        in_interval = jnp.mean((jnp.abs(z) < q).astype(jnp.float64))
+        ece_list.append(abs(float(in_interval) - conf))
 
     return float(np.mean(ece_list))
 
 
-def expected_calibration_error(
-    y_samples, y_test, levels=None
-):
+def expected_calibration_error(y_samples, y_test, levels=None):
     """Expected calibration error from posterior samples.
 
     Args:
@@ -123,12 +119,14 @@ def expected_calibration_error(
     if levels is None:
         levels = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
-    y_test = y_test.squeeze()
+    y_test = jnp.squeeze(y_test)
     ece_list = []
     for conf in levels:
-        lower = torch.quantile(y_samples, 0.5 - conf / 2, dim=0)
-        upper = torch.quantile(y_samples, 0.5 + conf / 2, dim=0)
-        in_interval = ((y_test >= lower) & (y_test <= upper)).float().mean()
-        ece_list.append(abs(in_interval.item() - conf))
+        lower = jnp.quantile(y_samples, 0.5 - conf / 2, axis=0)
+        upper = jnp.quantile(y_samples, 0.5 + conf / 2, axis=0)
+        in_interval = jnp.mean(
+            ((y_test >= lower) & (y_test <= upper)).astype(jnp.float64)
+        )
+        ece_list.append(abs(float(in_interval) - conf))
 
     return float(np.mean(ece_list))

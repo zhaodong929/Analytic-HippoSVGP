@@ -11,6 +11,7 @@ dependencies = [
     "beartype>=0.19",
     "numpy>=1.26",
     "scipy>=1.14",
+    "spbessax>=0.1.4",
     "matplotlib>=3.8",
     "pyyaml>=6.0",
 ]

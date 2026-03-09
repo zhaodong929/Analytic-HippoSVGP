@@ -1,7 +1,7 @@
 """Solar irradiance online dataset."""
 
+import jax.numpy as jnp
 import numpy as np
-import torch
 
 from scripts.datasets.base import OnlineDataset, TaskData
 
@@ -13,14 +13,12 @@ class SolarOnlineDataset(OnlineDataset):
         train_path: path to solar_data_train.npy
         test_path: path to solar_data_test.npy
         num_chunks: number of online learning tasks
-        device: torch device
     """
 
-    def __init__(self, train_path, test_path, num_chunks=10, device="cpu"):
+    def __init__(self, train_path, test_path, num_chunks=10):
         self._train_path = train_path
         self._test_path = test_path
         self._num_chunks = num_chunks
-        self._device = device
 
     @property
     def num_tasks(self):
@@ -30,10 +28,10 @@ class SolarOnlineDataset(OnlineDataset):
         data_train = np.load(self._train_path)
         data_test = np.load(self._test_path)
 
-        x = torch.tensor(data_train[:, 0:1], dtype=torch.float64, device=self._device)
-        y = torch.tensor(data_train[:, 1:2], dtype=torch.float64, device=self._device)
-        x_t = torch.tensor(data_test[:, 0:1], dtype=torch.float64, device=self._device)
-        y_t = torch.tensor(data_test[:, 1:2], dtype=torch.float64, device=self._device)
+        x = jnp.array(data_train[:, 0:1], dtype=jnp.float64)
+        y = jnp.array(data_train[:, 1:2], dtype=jnp.float64)
+        x_t = jnp.array(data_test[:, 0:1], dtype=jnp.float64)
+        y_t = jnp.array(data_test[:, 1:2], dtype=jnp.float64)
 
         split_train = x.shape[0] // self._num_chunks
         split_test = x_t.shape[0] // self._num_chunks
