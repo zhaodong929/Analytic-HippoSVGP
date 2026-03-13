@@ -3,3 +3,6 @@ __pycache__/
 .ipynb_checkpoints/
 *.DS_Store
 .vscode/
+logs/
+slurm*.out
+*_*.out

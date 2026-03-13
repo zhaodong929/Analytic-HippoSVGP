@@ -8,11 +8,15 @@ HIPPO_SVGP.egg-info/dependency_links.txt
 HIPPO_SVGP.egg-info/requires.txt
 HIPPO_SVGP.egg-info/top_level.txt
 hipposvgp/__init__.py
+hipposvgp/check_convergence.py
+hipposvgp/check_convergence_covid.py
 hipposvgp/gpvae.py
 hipposvgp/gpvae_kernel.py
 hipposvgp/gpvae_utils.py
 hipposvgp/hippo.py
 hipposvgp/hsvgp.py
+hipposvgp/hsvgp_analytic.py
+hipposvgp/hsvgp_analytic_learned.py
 hipposvgp/kernel.py
 hipposvgp/likelihood.py
 hipposvgp/multidim.py
@@ -21,3 +25,4 @@ hipposvgp/sgpr.py
 hipposvgp/svgp.py
 hipposvgp/svgpvae.py
 hipposvgp/utils.py
+tests/test_analytic_runtime_guard.py
