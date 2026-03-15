@@ -1,8 +1,10 @@
 import argparse
+from functools import lru_cache
 import math
 import os
 import time
 import traceback
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,6 +14,11 @@ import torch.nn as nn
 from hipposvgp.hippo import HiPPO_LegS
 from hipposvgp.sgpr import HIPPO_OSGPR_VFE, HIPPO_SVGP
 from scripts.onedim.solar.baseline import FullGP
+
+try:
+    from torch_xla.experimental.scan import scan as xla_scan
+except Exception:
+    xla_scan = None
 
 ANALYTIC_FIXED_CFG = {
     "globalstart_wt_mode": "w",
@@ -86,10 +93,183 @@ def setup():
             "'cpu' improves cross-device reproducibility; 'match' keeps legacy behavior."
         ),
     )
+    parser.add_argument(
+        "--analytic_compile",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help="Compile the analytic spherical-Bessel recurrence with torch.compile when available.",
+    )
+    parser.add_argument(
+        "--analytic_compile_mode",
+        type=str,
+        default="reduce-overhead",
+        choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+        help="torch.compile mode for the analytic recurrence kernel.",
+    )
+    parser.add_argument(
+        "--analytic_loop_backend",
+        type=str,
+        default="auto",
+        choices=["auto", "python", "scan"],
+        help="Loop backend for the Miller recurrence. 'scan' uses torch_xla.experimental.scan when available.",
+    )
     return parser.parse_args()
 
 
-def _spherical_bessel_j(lmax, x):
+_ANALYTIC_WARNINGS_EMITTED = set()
+
+
+def _warn_analytic_once(key, message):
+    if key in _ANALYTIC_WARNINGS_EMITTED:
+        return
+    warnings.warn(message, RuntimeWarning, stacklevel=2)
+    _ANALYTIC_WARNINGS_EMITTED.add(key)
+
+
+def _miller_rescale(f_nm1, f_n, f_np1, large_thr, small_thr):
+    scale = torch.maximum(torch.maximum(f_nm1.abs(), f_n.abs()), f_np1.abs())
+    scale = torch.where(
+        scale > large_thr,
+        scale,
+        torch.where(scale < small_thr, torch.full_like(scale, small_thr), torch.ones_like(scale)),
+    )
+    return f_nm1 / scale, f_n / scale, f_np1 / scale, torch.log(scale)
+
+
+def _miller_recurrence_python(x_safe, lmax, n_start):
+    out_shape = (lmax + 1,) + tuple(x_safe.shape)
+    f = torch.zeros(out_shape, device=x_safe.device, dtype=x_safe.dtype)
+    log_s = torch.zeros(out_shape, device=x_safe.device, dtype=x_safe.dtype)
+
+    f_np1 = torch.zeros_like(x_safe)
+    f_n = torch.ones_like(x_safe)
+    cur_log_s = torch.zeros_like(x_safe)
+
+    if x_safe.dtype == torch.float64:
+        large_thr = 1e100
+        small_thr = 1e-100
+    else:
+        large_thr = 1e15
+        small_thr = 1e-15
+
+    for n in range(n_start, 0, -1):
+        f_nm1 = ((2 * n + 1) / x_safe) * f_n - f_np1
+        f_nm1, f_n, f_np1, log_scale = _miller_rescale(
+            f_nm1, f_n, f_np1, large_thr=large_thr, small_thr=small_thr
+        )
+        cur_log_s = cur_log_s + log_scale
+
+        if n - 1 <= lmax:
+            f[n - 1] = f_nm1
+            log_s[n - 1] = cur_log_s
+        f_np1 = f_n
+        f_n = f_nm1
+    return f, log_s
+
+
+def _miller_recurrence_scan(x_safe, lmax, n_start):
+    if xla_scan is None:
+        raise RuntimeError("torch_xla.experimental.scan is not available")
+
+    if x_safe.dtype == torch.float64:
+        large_thr = 1e100
+        small_thr = 1e-100
+    else:
+        large_thr = 1e15
+        small_thr = 1e-15
+
+    n_values = torch.arange(n_start, 0, -1, device=x_safe.device, dtype=torch.int64)
+
+    def step(carry, n):
+        f_np1, f_n, cur_log_s = carry
+        n_float = n.to(dtype=x_safe.dtype)
+        f_nm1 = ((2 * n_float + 1) / x_safe) * f_n - f_np1
+        f_nm1, f_n_scaled, _, log_scale = _miller_rescale(
+            f_nm1, f_n, f_np1, large_thr=large_thr, small_thr=small_thr
+        )
+        new_log_s = cur_log_s + log_scale
+        return (f_n_scaled, f_nm1, new_log_s), (f_nm1, new_log_s)
+
+    init = (torch.zeros_like(x_safe), torch.ones_like(x_safe), torch.zeros_like(x_safe))
+    _, (f_hist, log_hist) = xla_scan(step, init, n_values, is_fn_pure=True)
+
+    n_idx = n_values - 1
+    keep_mask = n_idx <= lmax
+    kept_idx = n_idx[keep_mask]
+    kept_f = f_hist[keep_mask]
+    kept_log = log_hist[keep_mask]
+
+    scatter_idx = kept_idx.view(-1, *([1] * x_safe.ndim)).expand(-1, *x_safe.shape)
+    out_shape = (lmax + 1,) + tuple(x_safe.shape)
+    f = torch.zeros(out_shape, device=x_safe.device, dtype=x_safe.dtype).scatter(
+        0, scatter_idx, kept_f
+    )
+    log_s = torch.zeros(out_shape, device=x_safe.device, dtype=x_safe.dtype).scatter(
+        0, scatter_idx, kept_log
+    )
+    return f, log_s
+
+
+@lru_cache(maxsize=128)
+def _get_compiled_miller_python(lmax, n_start, compile_mode):
+    def compiled_impl(x_safe):
+        return _miller_recurrence_python(x_safe, lmax=lmax, n_start=n_start)
+
+    return torch.compile(compiled_impl, mode=compile_mode)
+
+
+def _resolve_bessel_loop_backend(requested_backend, x):
+    if requested_backend == "python":
+        return "python"
+    if requested_backend == "scan":
+        if xla_scan is None:
+            _warn_analytic_once(
+                "scan_unavailable",
+                "analytic_loop_backend='scan' requested but torch_xla.experimental.scan is unavailable; falling back to the Python recurrence.",
+            )
+            return "python"
+        if x.device.type != "xla":
+            _warn_analytic_once(
+                "scan_requires_xla",
+                "analytic_loop_backend='scan' requires an XLA device; falling back to the Python recurrence.",
+            )
+            return "python"
+        return "scan"
+    if xla_scan is not None and x.device.type == "xla":
+        return "scan"
+    return "python"
+
+
+def _run_miller_recurrence(x_safe, lmax, n_start, enable_compile=False, compile_mode="default", loop_backend="auto"):
+    backend = _resolve_bessel_loop_backend(loop_backend, x_safe)
+    if backend == "scan":
+        return _miller_recurrence_scan(x_safe, lmax=lmax, n_start=n_start)
+
+    if enable_compile:
+        if not hasattr(torch, "compile"):
+            _warn_analytic_once(
+                "compile_unavailable",
+                "analytic_compile=1 requested but torch.compile is unavailable; falling back to eager execution.",
+            )
+            return _miller_recurrence_python(x_safe, lmax=lmax, n_start=n_start)
+        try:
+            return _get_compiled_miller_python(lmax, n_start, compile_mode)(x_safe)
+        except Exception as exc:
+            _warn_analytic_once(
+                "compile_failed",
+                f"torch.compile failed for the analytic recurrence ({type(exc).__name__}: {exc}); falling back to eager execution.",
+            )
+    return _miller_recurrence_python(x_safe, lmax=lmax, n_start=n_start)
+
+
+def _spherical_bessel_j(
+    lmax,
+    x,
+    enable_compile=False,
+    compile_mode="default",
+    loop_backend="auto",
+):
     """Pure-torch spherical Bessel j_0..j_lmax via stable Miller recurrence."""
     eps = 1e-8
     x_abs = x.abs()
@@ -99,41 +279,14 @@ def _spherical_bessel_j(lmax, x):
     max_x = float(x_abs.max().detach().cpu())
     n_start = int(lmax + max_x + 50)
 
-    out_shape = (lmax + 1,) + tuple(x.shape)
-    f = torch.zeros(out_shape, device=x.device, dtype=x.dtype)
-    log_s = torch.zeros(out_shape, device=x.device, dtype=x.dtype)
-
-    f_np1 = torch.zeros_like(x_safe)
-    f_n = torch.ones_like(x_safe)
-    cur_log_s = torch.zeros_like(x_safe)
-
-    if x.dtype == torch.float64:
-        large_thr = 1e100
-        small_thr = 1e-100
-    else:
-        large_thr = 1e15
-        small_thr = 1e-15
-
-    for n in range(n_start, 0, -1):
-        f_nm1 = ((2 * n + 1) / x_safe) * f_n - f_np1
-
-        scale = torch.maximum(torch.maximum(f_nm1.abs(), f_n.abs()), f_np1.abs())
-        scale = torch.where(
-            scale > large_thr,
-            scale,
-            torch.where(scale < small_thr, torch.full_like(scale, small_thr), torch.ones_like(scale)),
-        )
-
-        f_nm1 = f_nm1 / scale
-        f_n = f_n / scale
-        f_np1 = f_np1 / scale
-        cur_log_s = cur_log_s + torch.log(scale)
-
-        if n - 1 <= lmax:
-            f[n - 1] = f_nm1
-            log_s[n - 1] = cur_log_s
-        f_np1 = f_n
-        f_n = f_nm1
+    f, log_s = _run_miller_recurrence(
+        x_safe,
+        lmax=lmax,
+        n_start=n_start,
+        enable_compile=enable_compile,
+        compile_mode=compile_mode,
+        loop_backend=loop_backend,
+    )
 
     true_j0 = torch.sin(x_safe) / x_safe
     scale0 = true_j0 / (f[0] + 1e-300)
@@ -174,7 +327,13 @@ def _analytic_get_Z_bessel(model, w):
         phase_origin_term = w * phase_origin
 
     L = torch.arange(model.inducing_size, dtype=model.dtype, device=model.device)
-    j = _spherical_bessel_j(model.inducing_size - 1, kappa).squeeze(1)
+    j = _spherical_bessel_j(
+        model.inducing_size - 1,
+        kappa,
+        enable_compile=bool(getattr(model, "analytic_compile", False)),
+        compile_mode=str(getattr(model, "analytic_compile_mode", "default")),
+        loop_backend=str(getattr(model, "analytic_loop_backend", "auto")),
+    ).squeeze(1)
     pref = torch.sqrt(2.0 * L + 1.0)[:, None]
     phase = phase_origin_term + kappa + L[:, None] * math.pi / 2.0
     z_sin = pref * j * torch.sin(phase)
@@ -206,6 +365,15 @@ def _sample_w(model, num_rff, sample_device_mode="cpu"):
         w_cpu = (1.0 / torch.exp(log_ls_cpu)) * torch.randn(num_rff, device="cpu")
         return w_cpu.to(device=model.device, dtype=model.dtype).unsqueeze(0)
     return model.Kernel.sample_from_spectral(num_rff).unsqueeze(0)
+
+
+def _configure_analytic_runtime(model, args, phase_origin):
+    model.analytic_z_type = args.analytic_z_type
+    model.phase_origin = phase_origin
+    model.globalstart_wt_mode = ANALYTIC_FIXED_CFG["globalstart_wt_mode"]
+    model.analytic_compile = bool(args.analytic_compile)
+    model.analytic_compile_mode = args.analytic_compile_mode
+    model.analytic_loop_backend = args.analytic_loop_backend
 
 
 class HIPPO_SVGP_ANALYTIC(HIPPO_SVGP):
@@ -656,6 +824,13 @@ if __name__ == "__main__":
                 args.phase_origin_mode, phase_origin
             )
         )
+        print(
+            "[Analytic] compile={}, compile_mode={}, loop_backend={}".format(
+                bool(args.analytic_compile),
+                args.analytic_compile_mode,
+                args.analytic_loop_backend,
+            )
+        )
 
         hippo = HiPPO_LegS(args.inducing_size, device)
         prev_discrete_steps = 0.0
@@ -679,9 +854,7 @@ if __name__ == "__main__":
             hippo=hippo,
             kernel_type=args.kernel_type,
         ).to(device)
-        model1.analytic_z_type = args.analytic_z_type
-        model1.phase_origin = phase_origin
-        model1.globalstart_wt_mode = ANALYTIC_FIXED_CFG["globalstart_wt_mode"]
+        _configure_analytic_runtime(model1, args, phase_origin)
         prev_discrete_steps += num_discrete_steps
 
         model1.log_noise = nn.Parameter(
@@ -789,9 +962,7 @@ if __name__ == "__main__":
                 device=device,
                 kernel_type=args.kernel_type,
             ).to(device)
-            cur_model.analytic_z_type = args.analytic_z_type
-            cur_model.phase_origin = phase_origin
-            cur_model.globalstart_wt_mode = ANALYTIC_FIXED_CFG["globalstart_wt_mode"]
+            _configure_analytic_runtime(cur_model, args, phase_origin)
             cur_model.analytic_psd_project = ANALYTIC_FIXED_CFG["analytic_psd_project"]
             cur_model.analytic_robust_cholesky = ANALYTIC_FIXED_CFG["analytic_robust_cholesky"]
             cur_model.analytic_symmetrize = ANALYTIC_FIXED_CFG["analytic_symmetrize"]

@@ -8,7 +8,7 @@ import torch
 from hipposvgp.hippo import HiPPO_LegS
 
 
-def _load_analytic_class():
+def _load_analytic_module():
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
@@ -23,10 +23,11 @@ def _load_analytic_class():
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
-    return module.HIPPO_SVGP_ANALYTIC
+    return module
 
 
-HIPPO_SVGP_ANALYTIC = _load_analytic_class()
+ANALYTIC_MODULE = _load_analytic_module()
+HIPPO_SVGP_ANALYTIC = ANALYTIC_MODULE.HIPPO_SVGP_ANALYTIC
 
 
 def _build_toy_analytic_model():
@@ -100,3 +101,20 @@ def test_analytic_kuu_is_cholesky_factorizable_with_jitter():
     assert chol.shape == (model.inducing_size, model.inducing_size)
     assert torch.isfinite(chol).all()
     assert kuu.shape == (model.inducing_size, model.inducing_size)
+
+
+def test_compiled_spherical_bessel_matches_eager():
+    if not hasattr(torch, "compile"):
+        return
+
+    x = torch.linspace(-3.0, 3.0, steps=17, dtype=torch.float64).view(1, -1)
+    eager = ANALYTIC_MODULE._spherical_bessel_j(5, x, enable_compile=False)
+    compiled = ANALYTIC_MODULE._spherical_bessel_j(
+        5,
+        x,
+        enable_compile=True,
+        compile_mode="reduce-overhead",
+        loop_backend="python",
+    )
+
+    torch.testing.assert_close(compiled, eager)
