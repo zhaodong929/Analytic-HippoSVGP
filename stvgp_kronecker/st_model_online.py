@@ -36,6 +36,9 @@ class OnlinePosteriorState:
     inv_kzz_s: Optional[torch.Tensor] = None
     fixed_x_s: Optional[torch.Tensor] = None
     fixed_kxz_s: Optional[torch.Tensor] = None
+    temporal_gram_summary: Optional[torch.Tensor] = None
+    spatial_projection_gram: Optional[torch.Tensor] = None
+    sylvester_ready: bool = False
     num_blocks_processed: int = 0
 
 
@@ -68,6 +71,7 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         spatial_kernel: BaseSpatialKernel,
         z_s: torch.Tensor,
         noise_std: float = 0.1,
+        covariate_dim: int = 0,
         jitter: float = 1e-6,
         enforce_shared_horizon: bool = True,
     ) -> None:
@@ -76,6 +80,13 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         self.spatial_kernel = spatial_kernel
         self.register_buffer("z_s", torch.as_tensor(z_s, dtype=z_s.dtype))
         self.log_noise_std = nn.Parameter(torch.log(torch.as_tensor(noise_std, dtype=z_s.dtype)))
+        self.covariate_dim = int(covariate_dim)
+        if self.covariate_dim > 0:
+            self.covariate_linear = nn.Linear(self.covariate_dim, 1, bias=True, dtype=z_s.dtype)
+            nn.init.zeros_(self.covariate_linear.weight)
+            nn.init.zeros_(self.covariate_linear.bias)
+        else:
+            self.covariate_linear = None
         self.jitter = float(jitter)
         self.enforce_shared_horizon = bool(enforce_shared_horizon)
         self.state = OnlinePosteriorState()
@@ -87,6 +98,7 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         spatial_kernel_config: SpatialKernelConfig,
         z_s: torch.Tensor,
         noise_std: float = 0.1,
+        covariate_dim: int = 0,
         jitter: float = 1e-6,
         enforce_shared_horizon: bool = True,
     ) -> "OnlinePosteriorSummarySTGP":
@@ -96,6 +108,7 @@ class OnlinePosteriorSummarySTGP(nn.Module):
             spatial_kernel=build_spatial_kernel(spatial_kernel_config),
             z_s=z_s,
             noise_std=noise_std,
+            covariate_dim=covariate_dim,
             jitter=jitter,
             enforce_shared_horizon=enforce_shared_horizon,
         )
@@ -139,6 +152,34 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         if tensor.numel() == num_times * num_space:
             return tensor.reshape(num_times, num_space)
         raise ValueError("Observations `y` must match the time-space grid shape.")
+
+    def _as_covariates(
+        self,
+        covariates: Optional[torch.Tensor],
+        num_times: int,
+        num_space: int,
+    ) -> Optional[torch.Tensor]:
+        if self.covariate_linear is None:
+            return None
+        if covariates is None:
+            raise ValueError("Covariates are required because the model was built with covariate_dim > 0.")
+        tensor = torch.as_tensor(covariates, dtype=self.z_s.dtype, device=self.z_s.device)
+        if tensor.shape == (num_times, num_space, self.covariate_dim):
+            return tensor
+        if tensor.numel() == num_times * num_space * self.covariate_dim:
+            return tensor.reshape(num_times, num_space, self.covariate_dim)
+        raise ValueError("Covariates must have shape [N_t, N_s, C] or flatten to N_t * N_s * C elements.")
+
+    def _covariate_mean(
+        self,
+        covariates: Optional[torch.Tensor],
+        num_times: int,
+        num_space: int,
+    ) -> torch.Tensor:
+        if self.covariate_linear is None:
+            return torch.zeros((num_times, num_space), dtype=self.z_s.dtype, device=self.z_s.device)
+        covariate_tensor = self._as_covariates(covariates, num_times=num_times, num_space=num_space)
+        return self.covariate_linear(covariate_tensor).squeeze(-1)
 
     def _same_spatial_grid(self, x1: torch.Tensor, x2: torch.Tensor) -> bool:
         return x1.shape == x2.shape and torch.allclose(x1, x2)
@@ -212,6 +253,9 @@ class OnlinePosteriorSummarySTGP(nn.Module):
             inv_kzz_s=inv_kzz_s,
             fixed_x_s=fixed_x_s,
             fixed_kxz_s=fixed_kxz_s,
+            temporal_gram_summary=torch.zeros_like(kuu_t),
+            spatial_projection_gram=None,
+            sylvester_ready=False,
             num_blocks_processed=0,
         )
         return self.state
@@ -331,6 +375,97 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         m = torch.cholesky_solve(state.h.unsqueeze(-1), chol_lambda).squeeze(-1)
         return m, chol_lambda
 
+    def _update_sylvester_summary(
+        self,
+        x_s: torch.Tensor,
+        a_t: torch.Tensor,
+        a_s: torch.Tensor,
+        residual_kuu_t: torch.Tensor,
+    ) -> None:
+        """Maintain the separable online precision summary used by the Sylvester solve.
+
+        This summary is exact only when:
+        - all blocks share the same spatial projection factor `A_s`,
+        - all temporal updates live in the reference inducing basis, and
+        - no extra residual correction term is needed.
+        """
+
+        state = self._require_initialized()
+        if state.temporal_gram_summary is None:
+            state.temporal_gram_summary = torch.zeros_like(state.kuu_t)
+
+        if torch.max(residual_kuu_t.abs()) > 1e-12:
+            state.sylvester_ready = False
+            return
+        if state.fixed_x_s is None or not self._same_spatial_grid(x_s, state.fixed_x_s):
+            state.sylvester_ready = False
+            return
+
+        spatial_gram = 0.5 * (
+            a_s.transpose(-1, -2) @ a_s
+            + (a_s.transpose(-1, -2) @ a_s).transpose(-1, -2)
+        )
+        if state.spatial_projection_gram is None:
+            state.spatial_projection_gram = spatial_gram
+        elif not torch.allclose(state.spatial_projection_gram, spatial_gram, atol=1e-8, rtol=1e-6):
+            state.sylvester_ready = False
+            return
+
+        temporal_gram = 0.5 * (
+            a_t.transpose(-1, -2) @ a_t
+            + (a_t.transpose(-1, -2) @ a_t).transpose(-1, -2)
+        )
+        state.temporal_gram_summary = state.temporal_gram_summary + torch.reciprocal(self.sigma2) * temporal_gram
+        state.sylvester_ready = True
+
+    def _posterior_correction_via_sylvester(
+        self,
+        a_t_star: torch.Tensor,
+        a_s_star: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """Evaluate `diag(Q Lambda^{-1} Q^T)` via the Sylvester reformulation.
+
+        With row-major flattening, the precision system
+        `(K_t^{-1} ⊗ K_s^{-1} + B ⊗ G) vec_r(Z) = vec_r(Q)`
+        is equivalent to the transposed Sylvester equation used in the reference
+        note and benchmark template:
+        `K_s^{-1} Y K_t^{-1} + G Y B = Q^T`, where `Y = Z^T`.
+        """
+
+        state = self._require_initialized()
+        if (
+            not state.sylvester_ready
+            or state.temporal_gram_summary is None
+            or state.spatial_projection_gram is None
+        ):
+            return None
+
+        chol_s = safe_cholesky(state.kzz_s, jitter=self.jitter)
+        chol_t = safe_cholesky(state.kuu_t, jitter=self.jitter)
+        g_tilde = 0.5 * (
+            chol_s.transpose(-1, -2) @ state.spatial_projection_gram @ chol_s
+            + (chol_s.transpose(-1, -2) @ state.spatial_projection_gram @ chol_s).transpose(-1, -2)
+        )
+        b_tilde = 0.5 * (
+            chol_t.transpose(-1, -2) @ state.temporal_gram_summary @ chol_t
+            + (chol_t.transpose(-1, -2) @ state.temporal_gram_summary @ chol_t).transpose(-1, -2)
+        )
+
+        gamma, u_s = torch.linalg.eigh(g_tilde)
+        beta, u_t = torch.linalg.eigh(b_tilde)
+        gamma = torch.clamp(gamma, min=0.0)
+        beta = torch.clamp(beta, min=0.0)
+        denom_inv = torch.reciprocal(
+            torch.clamp(1.0 + gamma.unsqueeze(-1) * beta.unsqueeze(0), min=1e-12)
+        )
+
+        spatial_proj = u_s.transpose(-1, -2) @ (chol_s.transpose(-1, -2) @ a_s_star.transpose(-1, -2))
+        temporal_proj = u_t.transpose(-1, -2) @ (chol_t.transpose(-1, -2) @ a_t_star.transpose(-1, -2))
+
+        spatial_sq = spatial_proj.square()
+        temporal_sq = temporal_proj.square()
+        return temporal_sq.transpose(-1, -2) @ denom_inv.transpose(-1, -2) @ spatial_sq
+
     def materialize_posterior_covariance(self) -> torch.Tensor:
         state = self._require_initialized()
         if state.chol_lambda is None:
@@ -344,6 +479,7 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         times: torch.Tensor,
         x_s: torch.Tensor | None,
         y: torch.Tensor,
+        covariates: Optional[torch.Tensor] = None,
         horizon: Optional[TemporalBlockSpec] = None,
     ) -> dict[str, Any]:
         """Update `Lambda` and `h` with one temporal block."""
@@ -353,6 +489,8 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         times = self._as_times(times)
         x_s, kxz_s = self._spatial_cross_covariance(x_s)
         y_grid = self._as_observations(y, num_times=times.shape[0], num_space=x_s.shape[0])
+        covariate_mean = self._covariate_mean(covariates, num_times=times.shape[0], num_space=x_s.shape[0])
+        residual_grid = y_grid - covariate_mean
         block_horizon = self._resolve_block_horizon(times, horizon)
 
         kfu_t_local = self.temporal_builder.compute_kfu_t(times, block_horizon)
@@ -369,7 +507,13 @@ class OnlinePosteriorSummarySTGP(nn.Module):
             a_t_local=a_t_local,
             residual_kuu_t=residual_kuu_t,
             a_s=a_s,
-            y_grid=y_grid,
+            y_grid=residual_grid,
+        )
+        self._update_sylvester_summary(
+            x_s=x_s,
+            a_t=a_t,
+            a_s=a_s,
+            residual_kuu_t=residual_kuu_t,
         )
 
         state.lambda_precision = state.lambda_precision + delta_lambda
@@ -378,10 +522,10 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         state.num_blocks_processed += 1
 
         mean_matrix = state.m.reshape(state.kuu_t.shape[0], state.kzz_s.shape[0])
-        block_mean = a_t @ mean_matrix @ a_s.transpose(-1, -2)
+        block_mean = a_t @ mean_matrix @ a_s.transpose(-1, -2) + covariate_mean
         block_rmse = torch.sqrt(torch.mean((block_mean - y_grid) ** 2))
 
-        pred = self.predict(times, x_s, include_noise=True)
+        pred = self.predict(times, x_s, covariates=covariates, include_noise=True)
         block_nll = 0.5 * torch.mean(
             torch.log(2.0 * torch.pi * pred["obs_var"]) + (y_grid - pred["mean"]) ** 2 / pred["obs_var"]
         )
@@ -410,6 +554,7 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         self,
         t_star: torch.Tensor,
         s_star: torch.Tensor,
+        covariates: Optional[torch.Tensor] = None,
         include_noise: bool = True,
         horizon: Optional[TemporalBlockSpec] = None,
     ) -> dict[str, torch.Tensor]:
@@ -433,6 +578,7 @@ class OnlinePosteriorSummarySTGP(nn.Module):
 
         mean_matrix = state.m.reshape(state.kuu_t.shape[0], state.kzz_s.shape[0])
         mean = a_t_star @ mean_matrix @ a_s_star.transpose(-1, -2)
+        mean = mean + self._covariate_mean(covariates, num_times=t_star.shape[0], num_space=s_star.shape[0])
 
         prior_diag = torch.outer(
             self.temporal_builder.compute_ktt_diag(t_star),
@@ -445,12 +591,16 @@ class OnlinePosteriorSummarySTGP(nn.Module):
             state.kzz_s,
         )
 
-        # TODO: chunk this dense Kronecker factor when prediction grids become large.
-        a_star_dense = torch.kron(a_t_star, a_s_star)
-        posterior_correction = rowwise_quadratic_form_from_precision_cholesky(
-            a_star_dense,
-            state.chol_lambda,
-        ).reshape(mean.shape)
+        posterior_correction = self._posterior_correction_via_sylvester(a_t_star, a_s_star)
+        variance_solver = "sylvester"
+        if posterior_correction is None:
+            # TODO: chunk this dense Kronecker factor when prediction grids become large.
+            a_star_dense = torch.kron(a_t_star, a_s_star)
+            posterior_correction = rowwise_quadratic_form_from_precision_cholesky(
+                a_star_dense,
+                state.chol_lambda,
+            ).reshape(mean.shape)
+            variance_solver = "dense_cholesky"
         latent_var = torch.clamp(prior_diag - projected_prior_diag + posterior_correction, min=1e-9)
         obs_var = latent_var + (self.sigma2 if include_noise else 0.0)
 
@@ -458,4 +608,5 @@ class OnlinePosteriorSummarySTGP(nn.Module):
             "mean": mean,
             "latent_var": latent_var,
             "obs_var": obs_var,
+            "variance_solver": variance_solver,
         }

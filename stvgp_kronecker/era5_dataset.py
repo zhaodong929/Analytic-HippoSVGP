@@ -84,6 +84,7 @@ class ERA5SplitTensor:
     times: torch.Tensor
     spatial_coords: torch.Tensor
     observations: torch.Tensor
+    covariates: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -136,15 +137,26 @@ def _sorted_split_values(data: np.ndarray, times: np.ndarray, variable_index: in
     return times[order], values[order]
 
 
+def _sorted_split_matrix(
+    data: np.ndarray,
+    times: np.ndarray,
+    variable_indices: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    values = np.asarray(data[variable_indices], dtype=np.float64)
+    times = np.asarray(times, dtype=np.float64).reshape(-1)
+    order = np.argsort(times)
+    return times[order], values[:, order]
+
+
 def _build_split_from_reference_times(
     reference_times: np.ndarray,
-    location_series: list[tuple[dict[float, float], tuple[float, float]]],
+    location_series: list[tuple[dict[float, float], Optional[dict[float, np.ndarray]], tuple[float, float]]],
 ) -> ERA5SplitTensor:
     if not location_series:
         raise ValueError("No location series were provided.")
 
     common_times = np.asarray(reference_times, dtype=np.float64)
-    for lookup, _ in location_series:
+    for lookup, _, _ in location_series:
         available = np.asarray(sorted(lookup.keys()), dtype=np.float64)
         common_times = np.intersect1d(common_times, available)
     common_times = np.sort(common_times)
@@ -152,19 +164,30 @@ def _build_split_from_reference_times(
         raise ValueError("No common timestamps across selected ERA5 locations.")
 
     obs_columns = []
+    covariate_columns = []
     spatial_coords = []
-    for lookup, (lat, lon) in location_series:
+    for lookup, covariate_lookup, (lat, lon) in location_series:
         obs_columns.append([lookup[float(t)] for t in common_times])
+        if covariate_lookup is not None:
+            covariate_columns.append(np.stack([covariate_lookup[float(t)] for t in common_times], axis=0))
         spatial_coords.append([lon, lat])
 
     observations = torch.as_tensor(np.stack(obs_columns, axis=-1), dtype=torch.float64)
     spatial = torch.as_tensor(np.asarray(spatial_coords, dtype=np.float64), dtype=torch.float64)
     times_tensor = torch.as_tensor(common_times, dtype=torch.float64)
-    return ERA5SplitTensor(times=times_tensor, spatial_coords=spatial, observations=observations)
+    covariates = None
+    if covariate_columns:
+        covariates = torch.as_tensor(np.stack(covariate_columns, axis=1), dtype=torch.float64)
+    return ERA5SplitTensor(
+        times=times_tensor,
+        spatial_coords=spatial,
+        observations=observations,
+        covariates=covariates,
+    )
 
 
 def _build_full_common_series(
-    location_series: list[tuple[dict[float, float], tuple[float, float]]],
+    location_series: list[tuple[dict[float, float], Optional[dict[float, np.ndarray]], tuple[float, float]]],
 ) -> ERA5SplitTensor:
     """Build one fully aligned time series across all selected locations."""
 
@@ -179,6 +202,7 @@ def _slice_split_tensor(split: ERA5SplitTensor, start: int, stop: int) -> ERA5Sp
         times=split.times[start:stop].clone(),
         spatial_coords=split.spatial_coords.clone(),
         observations=split.observations[start:stop].clone(),
+        covariates=split.covariates[start:stop].clone() if split.covariates is not None else None,
     )
 
 
@@ -218,6 +242,8 @@ def _concatenate_split_tensors(splits: list[ERA5SplitTensor]) -> ERA5SplitTensor
     reference_spatial = splits[0].spatial_coords
     time_chunks: list[torch.Tensor] = []
     obs_chunks: list[torch.Tensor] = []
+    covariate_chunks: list[torch.Tensor] = []
+    has_covariates = splits[0].covariates is not None
     last_end: float | None = None
     for split in splits:
         if split.spatial_coords.shape != reference_spatial.shape or not torch.allclose(
@@ -225,6 +251,8 @@ def _concatenate_split_tensors(splits: list[ERA5SplitTensor]) -> ERA5SplitTensor
             reference_spatial,
         ):
             raise ValueError("All concatenated ERA5 task splits must share the same spatial coordinates.")
+        if (split.covariates is not None) != has_covariates:
+            raise ValueError("All concatenated ERA5 task splits must either all have covariates or all omit them.")
 
         times = split.times.clone()
         if last_end is not None and times.numel() > 0 and float(times[0]) <= last_end:
@@ -233,21 +261,25 @@ def _concatenate_split_tensors(splits: list[ERA5SplitTensor]) -> ERA5SplitTensor
             last_end = float(times[-1])
         time_chunks.append(times)
         obs_chunks.append(split.observations.clone())
+        if split.covariates is not None:
+            covariate_chunks.append(split.covariates.clone())
 
     return ERA5SplitTensor(
         times=torch.cat(time_chunks, dim=0),
         spatial_coords=reference_spatial.clone(),
         observations=torch.cat(obs_chunks, dim=0),
+        covariates=torch.cat(covariate_chunks, dim=0) if covariate_chunks else None,
     )
 
 
 def _load_processed_location_series(
     task_dir: str | Path,
     variable_index: int = 0,
+    covariate_indices: Optional[list[int]] = None,
     max_locations: Optional[int] = None,
     scaled: bool = True,
     location_stride: int = 1,
-) -> tuple[list[tuple[dict[float, float], tuple[float, float]]], np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[list[tuple[dict[float, float], Optional[dict[float, np.ndarray]], tuple[float, float]]], np.ndarray, np.ndarray, np.ndarray]:
     """Load per-location time/value lookups from one processed ERA5 task directory."""
 
     task_dir = Path(task_dir)
@@ -268,7 +300,8 @@ def _load_processed_location_series(
     if not files:
         raise ValueError("No processed ERA5 sequence files remain after subsampling.")
 
-    location_series: list[tuple[dict[float, float], tuple[float, float]]] = []
+    covariate_indices = [int(index) for index in (covariate_indices or []) if int(index) != variable_index]
+    location_series: list[tuple[dict[float, float], Optional[dict[float, np.ndarray]], tuple[float, float]]] = []
     reference_train_times: np.ndarray | None = None
     reference_val_times: np.ndarray | None = None
     reference_test_times: np.ndarray | None = None
@@ -289,7 +322,33 @@ def _load_processed_location_series(
                 ]
                 for t, v in zip(times, values)
             }
-            location_series.append((full_lookup, lat_lon))
+            covariate_lookup: Optional[dict[float, np.ndarray]] = None
+            if covariate_indices:
+                cov_train_times, cov_train_values = _sorted_split_matrix(
+                    arr["data_train"],
+                    arr["time_train"],
+                    covariate_indices,
+                )
+                cov_val_times, cov_val_values = _sorted_split_matrix(
+                    arr["data_val"],
+                    arr["time_val"],
+                    covariate_indices,
+                )
+                cov_test_times, cov_test_values = _sorted_split_matrix(
+                    arr["data_test"],
+                    arr["time_test"],
+                    covariate_indices,
+                )
+                covariate_lookup = {
+                    float(t): value.astype(np.float64, copy=False)
+                    for times, values in [
+                        (cov_train_times, cov_train_values),
+                        (cov_val_times, cov_val_values),
+                        (cov_test_times, cov_test_values),
+                    ]
+                    for t, value in zip(times, values.transpose(1, 0))
+                }
+            location_series.append((full_lookup, covariate_lookup, lat_lon))
             if reference_train_times is None:
                 reference_train_times = train_times
                 reference_val_times = val_times
@@ -368,6 +427,7 @@ def load_era5_grid(
 def load_processed_era5_task(
     task_dir: str | Path,
     variable_index: int = 0,
+    covariate_indices: Optional[list[int]] = None,
     max_locations: Optional[int] = None,
     scaled: bool = True,
     location_stride: int = 1,
@@ -392,6 +452,7 @@ def load_processed_era5_task(
     ) = _load_processed_location_series(
         task_dir=task_dir,
         variable_index=variable_index,
+        covariate_indices=covariate_indices,
         max_locations=max_locations,
         scaled=scaled,
         location_stride=location_stride,
@@ -423,6 +484,7 @@ def load_processed_era5_task(
 def load_processed_era5_tasks(
     task_dirs: list[str | Path],
     variable_index: int = 0,
+    covariate_indices: Optional[list[int]] = None,
     max_locations: Optional[int] = None,
     scaled: bool = True,
     location_stride: int = 1,
@@ -441,6 +503,7 @@ def load_processed_era5_tasks(
             load_processed_era5_task(
                 task_dir=task_dir,
                 variable_index=variable_index,
+                covariate_indices=covariate_indices,
                 max_locations=max_locations,
                 scaled=scaled,
                 location_stride=location_stride,

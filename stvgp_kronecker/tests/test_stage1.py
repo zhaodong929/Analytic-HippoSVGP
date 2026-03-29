@@ -4,6 +4,10 @@ import numpy as np
 import pytest
 import torch
 
+from stvgp_kronecker.kron_ops import (
+    kron_rowwise_prior_diag,
+    rowwise_quadratic_form_from_precision_cholesky,
+)
 from stvgp_kronecker.era5_dataset import (
     count_processed_era5_locations,
     discover_processed_era5_task_dirs,
@@ -15,6 +19,7 @@ from stvgp_kronecker.st_model_batch import BatchKroneckerSTHiPPOSVGP
 from stvgp_kronecker.st_model_online import OnlinePosteriorSummarySTGP
 from stvgp_kronecker.temporal_analytic import TemporalAnalyticConfig
 from stvgp_kronecker.temporal_analytic import TemporalBlockSpec
+from stvgp_kronecker.train_batch import select_spatial_inducing_points
 
 
 def make_model() -> BatchKroneckerSTHiPPOSVGP:
@@ -279,6 +284,74 @@ def test_online_local_horizon_transfer_updates_state() -> None:
     assert torch.isfinite(pred["mean"]).all()
 
 
+def test_online_predictive_variance_matches_dense_precision_solver() -> None:
+    times, spatial, y = make_toy_data()
+    z_s = torch.tensor(
+        [
+            [-1.0, -1.0],
+            [-1.0, 1.0],
+            [1.0, -1.0],
+            [1.0, 1.0],
+        ],
+        dtype=torch.float64,
+    )
+    temporal_config = TemporalAnalyticConfig(
+        inducing_size=4,
+        rff_sample_size=64,
+        variance=1.0,
+        lengthscale=1.1,
+        num_discrete_steps=times.shape[0],
+        seed=123,
+    )
+    spatial_config = SpatialKernelConfig(
+        input_dim=2,
+        kernel_type="rbf",
+        variance=1.0,
+        lengthscale=0.9,
+    )
+    horizon = TemporalBlockSpec.from_times(times, num_discrete_steps=times.shape[0], prev_discrete_steps=0)
+
+    model = OnlinePosteriorSummarySTGP.from_configs(
+        temporal_config=temporal_config,
+        spatial_kernel_config=spatial_config,
+        z_s=z_s,
+        noise_std=0.1,
+        enforce_shared_horizon=True,
+    )
+    model.initialize(reference_horizon=horizon, x_s=spatial)
+    for start in range(0, times.shape[0], 2):
+        stop = min(start + 2, times.shape[0])
+        model.update_block(times[start:stop], spatial, y[start:stop])
+
+    pred = model.predict(times, spatial)
+    assert pred["variance_solver"] == "sylvester"
+
+    state = model.state
+    assert state.chol_lambda is not None
+    kfu_t_star = model.temporal_builder.compute_kfu_t(times, state.reference_horizon)
+    kxz_s_star = model.spatial_kernel.compute_kxz_s(spatial, model.z_s)
+    a_t_star = kfu_t_star @ state.inv_kuu_t
+    a_s_star = kxz_s_star @ state.inv_kzz_s
+
+    prior_diag = torch.outer(
+        model.temporal_builder.compute_ktt_diag(times),
+        model.spatial_kernel.diag(spatial),
+    )
+    projected_prior_diag = kron_rowwise_prior_diag(
+        a_t_star,
+        state.kuu_t,
+        a_s_star,
+        state.kzz_s,
+    )
+    dense_posterior_correction = rowwise_quadratic_form_from_precision_cholesky(
+        torch.kron(a_t_star, a_s_star),
+        state.chol_lambda,
+    ).reshape(pred["latent_var"].shape)
+    dense_latent_var = torch.clamp(prior_diag - projected_prior_diag + dense_posterior_correction, min=1e-9)
+
+    assert torch.allclose(pred["latent_var"], dense_latent_var, atol=1e-8, rtol=1e-6)
+
+
 def test_load_processed_era5_task_aligns_locations(tmp_path) -> None:
     task_dir = tmp_path / "task_1"
     seq_dir = task_dir / "sequences"
@@ -389,3 +462,28 @@ def test_discover_and_count_processed_era5_tasks(tmp_path) -> None:
     task_dirs = discover_processed_era5_task_dirs(root, ["task_1", "task_2"])
     assert [path.name for path in task_dirs] == ["task_1", "task_2"]
     assert count_processed_era5_locations(task_dirs[0], scaled=True, location_stride=1) == 2
+
+
+def test_spatial_inducing_fps_spreads_across_domain() -> None:
+    left_strip = torch.stack(
+        [
+            torch.full((50,), -10.0, dtype=torch.float64),
+            torch.linspace(49.0, 54.0, 50, dtype=torch.float64),
+        ],
+        dim=-1,
+    )
+    right_strip = torch.stack(
+        [
+            torch.full((50,), 2.0, dtype=torch.float64),
+            torch.linspace(54.0, 59.0, 50, dtype=torch.float64),
+        ],
+        dim=-1,
+    )
+    spatial = torch.cat([left_strip, right_strip], dim=0)
+
+    first = select_spatial_inducing_points(spatial, spatial_inducing_count=8, selection_method="first")
+    fps = select_spatial_inducing_points(spatial, spatial_inducing_count=8, selection_method="fps")
+
+    assert float(first[:, 0].max()) < 2.0
+    assert float(fps[:, 0].min()) == -10.0
+    assert float(fps[:, 0].max()) == 2.0

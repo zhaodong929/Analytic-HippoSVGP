@@ -6,6 +6,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -16,6 +17,7 @@ if __package__ in {None, ""}:
 
 try:
     from .era5_dataset import (
+        era5_variable_name,
         build_temporal_blocks,
         load_era5_grid,
         load_processed_era5_task,
@@ -33,9 +35,11 @@ try:
         fit_batch_model,
         format_model_hyperparameters,
         make_synthetic_dataset,
+        maybe_save_era5_maps,
         move_tensor_to_device,
         predictive_nll,
         rmse,
+        resolve_era5_covariate_indices,
         resolve_era5_max_locations,
         resolve_device,
         resolve_era5_task_dirs,
@@ -46,6 +50,7 @@ try:
     )
 except ImportError:  # pragma: no cover - allows direct script execution
     from stvgp_kronecker.era5_dataset import (
+        era5_variable_name,
         build_temporal_blocks,
         load_era5_grid,
         load_processed_era5_task,
@@ -63,9 +68,11 @@ except ImportError:  # pragma: no cover - allows direct script execution
         fit_batch_model,
         format_model_hyperparameters,
         make_synthetic_dataset,
+        maybe_save_era5_maps,
         move_tensor_to_device,
         predictive_nll,
         rmse,
+        resolve_era5_covariate_indices,
         resolve_era5_max_locations,
         resolve_device,
         resolve_era5_task_dirs,
@@ -85,7 +92,12 @@ def _make_spatial_inducing(side: int, dtype: torch.dtype, device: torch.device) 
     return torch.stack([z1.reshape(-1), z2.reshape(-1)], dim=-1)
 
 
-def _build_online_model(args: argparse.Namespace, z_s: torch.Tensor, input_dim: int) -> OnlinePosteriorSummarySTGP:
+def _build_online_model(
+    args: argparse.Namespace,
+    z_s: torch.Tensor,
+    input_dim: int,
+    covariate_dim: int = 0,
+) -> OnlinePosteriorSummarySTGP:
     model = OnlinePosteriorSummarySTGP.from_configs(
         temporal_config=TemporalAnalyticConfig(
             inducing_size=args.temporal_inducing,
@@ -104,6 +116,7 @@ def _build_online_model(args: argparse.Namespace, z_s: torch.Tensor, input_dim: 
         ),
         z_s=z_s,
         noise_std=args.likelihood_noise,
+        covariate_dim=covariate_dim,
         enforce_shared_horizon=not args.allow_local_horizon,
     )
     return model.to(args.runtime_device)
@@ -114,15 +127,18 @@ def _maybe_pretrain_stage1(
     train_times: torch.Tensor,
     train_spatial: torch.Tensor,
     train_observations: torch.Tensor,
+    train_covariates: torch.Tensor | None,
     val_times: torch.Tensor | None,
     val_spatial: torch.Tensor | None,
     val_observations: torch.Tensor | None,
+    val_covariates: torch.Tensor | None,
     z_s: torch.Tensor,
 ) -> tuple[BatchKroneckerSTHiPPOSVGP | None, dict[str, Any] | None]:
     if args.pretrain_steps <= 0:
         return None, None
 
-    batch_model = build_stage1_model(args, z_s=z_s, input_dim=train_spatial.shape[1])
+    covariate_dim = 0 if train_covariates is None else train_covariates.shape[-1]
+    batch_model = build_stage1_model(args, z_s=z_s, input_dim=train_spatial.shape[1], covariate_dim=covariate_dim)
     set_hyperparameter_trainability(batch_model, trainable=not args.freeze_hyperparameters)
     optimizer = build_optimizer(batch_model, learning_rate=args.pretrain_learning_rate)
     fit_summary = fit_batch_model(
@@ -131,6 +147,7 @@ def _maybe_pretrain_stage1(
         train_times=train_times,
         train_spatial=train_spatial,
         train_observations=train_observations,
+        train_covariates=train_covariates,
         train_steps=args.pretrain_steps,
         log_every=args.pretrain_log_every,
         block_size=args.pretrain_block_size,
@@ -138,13 +155,17 @@ def _maybe_pretrain_stage1(
         val_times=val_times,
         val_spatial=val_spatial,
         val_observations=val_observations,
+        val_covariates=val_covariates,
         selection_metric=args.selection_metric,
+        early_stopping_patience=args.pretrain_early_stopping_patience,
+        early_stopping_min_delta=args.pretrain_early_stopping_min_delta,
     )
     print(
-        "[pretrain] best_step={} selection_metric={} best_value={:.4f} inducing_points={} {}".format(
+        "[pretrain] best_step={} selection_metric={} best_value={:.4f} stopped_early={} inducing_points={} {}".format(
             fit_summary["best_step"],
             args.selection_metric,
             fit_summary["best_metric"],
+            fit_summary["stopped_early"],
             batch_model.z_s.shape[0],
             format_model_hyperparameters(batch_model),
         )
@@ -174,15 +195,17 @@ def run_synthetic_online(args: argparse.Namespace) -> None:
         train_times=times,
         train_spatial=spatial,
         train_observations=observations,
+        train_covariates=None,
         val_times=None,
         val_spatial=None,
         val_observations=None,
+        val_covariates=None,
         z_s=z_s,
     )
     if pretrained_batch is not None:
         z_s = pretrained_batch.z_s.detach().clone()
 
-    model = _build_online_model(args, z_s=z_s, input_dim=2)
+    model = _build_online_model(args, z_s=z_s, input_dim=2, covariate_dim=0)
     if pretrained_batch is not None:
         model.load_pretrained_batch_state(clone_state_dict(pretrained_batch))
         model.freeze_model_hyperparameters()
@@ -201,6 +224,7 @@ def run_synthetic_online(args: argparse.Namespace) -> None:
             times=times[block_slice],
             x_s=spatial,
             y=observations[block_slice],
+            covariates=None,
             horizon=None if not args.allow_local_horizon else block_horizon,
         )
         block_times.append(output["runtime_s"])
@@ -210,7 +234,7 @@ def run_synthetic_online(args: argparse.Namespace) -> None:
         )
 
     total_runtime = time.perf_counter() - total_start
-    pred_output = model.predict(times, spatial)
+    pred_output = model.predict(times, spatial, covariates=None)
     mean_block_time = sum(block_times) / len(block_times)
     print(
         "[eval] rmse={:.4f} pred_nll={:.4f} runtime={:.3f}s gpu_mem={:.1f}MB time_per_block={:.3f}s".format(
@@ -245,11 +269,13 @@ def run_synthetic_online(args: argparse.Namespace) -> None:
 def run_era5_online_probe(args: argparse.Namespace) -> None:
     task_dirs = resolve_era5_task_dirs(args)
     if task_dirs:
+        covariate_indices = resolve_era5_covariate_indices(args)
         max_locations = resolve_era5_max_locations(args, task_dirs)
         if len(task_dirs) > 1:
             task = load_processed_era5_tasks(
                 task_dirs=task_dirs,
                 variable_index=args.era5_variable_index,
+                covariate_indices=covariate_indices,
                 max_locations=max_locations,
                 scaled=not args.era5_unscaled,
                 location_stride=args.era5_location_stride,
@@ -262,6 +288,7 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
             task = load_processed_era5_task(
                 task_dir=task_dirs[0] if task_dirs else args.era5_task_dir,
                 variable_index=args.era5_variable_index,
+                covariate_indices=covariate_indices,
                 max_locations=max_locations,
                 scaled=not args.era5_unscaled,
                 location_stride=args.era5_location_stride,
@@ -274,12 +301,18 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
         task.train.times = move_tensor_to_device(task.train.times, args.runtime_device)
         task.train.spatial_coords = move_tensor_to_device(task.train.spatial_coords, args.runtime_device)
         task.train.observations = move_tensor_to_device(task.train.observations, args.runtime_device)
+        if task.train.covariates is not None:
+            task.train.covariates = move_tensor_to_device(task.train.covariates, args.runtime_device)
         task.val.times = move_tensor_to_device(task.val.times, args.runtime_device)
         task.val.spatial_coords = move_tensor_to_device(task.val.spatial_coords, args.runtime_device)
         task.val.observations = move_tensor_to_device(task.val.observations, args.runtime_device)
+        if task.val.covariates is not None:
+            task.val.covariates = move_tensor_to_device(task.val.covariates, args.runtime_device)
         task.test.times = move_tensor_to_device(task.test.times, args.runtime_device)
         task.test.spatial_coords = move_tensor_to_device(task.test.spatial_coords, args.runtime_device)
         task.test.observations = move_tensor_to_device(task.test.observations, args.runtime_device)
+        if task.test.covariates is not None:
+            task.test.covariates = move_tensor_to_device(task.test.covariates, args.runtime_device)
         spatial = task.train.spatial_coords
         reference_horizon = TemporalBlockSpec.from_times(
             task.train.times,
@@ -290,6 +323,7 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
             spatial,
             inducing_side=args.inducing_side,
             spatial_inducing_count=args.spatial_inducing_count,
+            selection_method=args.spatial_inducing_selection,
         )
 
         args.reference_steps = args.reference_steps or task.train.times.shape[0]
@@ -298,15 +332,18 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
             train_times=task.train.times,
             train_spatial=spatial,
             train_observations=task.train.observations,
+            train_covariates=task.train.covariates,
             val_times=task.val.times,
             val_spatial=task.val.spatial_coords,
             val_observations=task.val.observations,
+            val_covariates=task.val.covariates,
             z_s=z_s,
         )
         if pretrained_batch is not None:
             z_s = pretrained_batch.z_s.detach().clone()
 
-        model = _build_online_model(args, z_s=z_s, input_dim=spatial.shape[1])
+        covariate_dim = 0 if task.train.covariates is None else task.train.covariates.shape[-1]
+        model = _build_online_model(args, z_s=z_s, input_dim=spatial.shape[1], covariate_dim=covariate_dim)
         if pretrained_batch is not None:
             model.load_pretrained_batch_state(clone_state_dict(pretrained_batch))
             model.freeze_model_hyperparameters()
@@ -325,6 +362,7 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
                 times=task.train.times[block_slice],
                 x_s=spatial,
                 y=task.train.observations[block_slice],
+                covariates=task.train.covariates[block_slice] if task.train.covariates is not None else None,
                 horizon=None if not args.allow_local_horizon else block_horizon,
             )
             block_times.append(output["runtime_s"])
@@ -337,9 +375,9 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
         if pretrain_summary is not None:
             train_runtime += pretrain_summary["training_runtime_s"]
 
-        train_pred = model.predict(task.train.times, task.train.spatial_coords)
-        val_pred = model.predict(task.val.times, task.val.spatial_coords)
-        test_pred = model.predict(task.test.times, task.test.spatial_coords)
+        train_pred = model.predict(task.train.times, task.train.spatial_coords, covariates=task.train.covariates)
+        val_pred = model.predict(task.val.times, task.val.spatial_coords, covariates=task.val.covariates)
+        test_pred = model.predict(task.test.times, task.test.spatial_coords, covariates=task.test.covariates)
         mean_block_time = sum(block_times) / len(block_times)
         full_location_count = infer_processed_era5_location_count(
             task_dirs,
@@ -359,13 +397,17 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
         )
         print(
             "[era5-data] temporal_method=analytic spatial_method=svgp spatial_coord_order=(lon,lat) "
-            "spatial_input_dim={} selected_locations={} available_locations={} full_task12={}".format(
+            "spatial_input_dim={} covariate_dim={} selected_locations={} available_locations={} full_task12={}".format(
                 task.train.spatial_coords.shape[1],
+                covariate_dim,
                 task.train.spatial_coords.shape[0],
                 full_location_count if full_location_count is not None else task.train.spatial_coords.shape[0],
                 bool(getattr(args, "era5_full_task12", False)),
             )
         )
+        if covariate_indices:
+            covariate_names = [era5_variable_name(index) for index in covariate_indices]
+            print(f"[era5-covariates] indices={covariate_indices} names={covariate_names}")
         print(
             "[model] inducing_points={} {}".format(
                 model.z_s.shape[0],
@@ -392,6 +434,18 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
                 current_gpu_memory_mb(),
                 mean_block_time,
             )
+        )
+        split_name = args.map_split
+        split_tensor = getattr(task, split_name)
+        split_pred = {"train": train_pred, "val": val_pred, "test": test_pred}[split_name]
+        maybe_save_era5_maps(
+            args=args,
+            mode="online",
+            task_name=task_name,
+            variable_name=task.variable_name,
+            split_name=split_name,
+            split_tensor=split_tensor,
+            pred_output=split_pred,
         )
         return
 
@@ -428,6 +482,11 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--synthetic-noise", type=float, default=0.05)
     parser.add_argument("--inducing-side", type=int, default=3)
     parser.add_argument("--spatial-inducing-count", type=int, default=None)
+    parser.add_argument(
+        "--spatial-inducing-selection",
+        choices=["fps", "grid", "first"],
+        default="grid",
+    )
     parser.add_argument("--temporal-inducing", type=int, default=6)
     parser.add_argument("--rff-sample-size", type=int, default=256)
     parser.add_argument("--temporal-lengthscale", type=float, default=1.0)
@@ -448,6 +507,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--pretrain-learning-rate", type=float, default=0.03)
     parser.add_argument("--pretrain-log-every", type=int, default=10)
     parser.add_argument("--pretrain-block-size", type=int, default=None)
+    parser.add_argument("--pretrain-early-stopping-patience", type=int, default=None)
+    parser.add_argument("--pretrain-early-stopping-min-delta", type=float, default=0.0)
 
     parser.add_argument("--era5-path", type=str, default="")
     parser.add_argument("--era5-task-dir", type=str, default="")
@@ -457,6 +518,13 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--era5-task-root", type=str, default="data/era5/processed_timeseries_4")
     parser.add_argument("--era5-variable", type=str, default="t2m")
     parser.add_argument("--era5-variable-index", type=int, default=0)
+    parser.add_argument(
+        "--era5-covariate-indices",
+        nargs="*",
+        type=int,
+        default=None,
+        help="Enable ERA5 covariates. Omit the flag to disable covariates; pass the flag with no indices to use all non-target ERA5 variables.",
+    )
     parser.add_argument("--era5-max-locations", type=int, default=32)
     parser.add_argument("--era5-use-all-locations", action="store_true")
     parser.add_argument("--era5-location-stride", type=int, default=1)
@@ -473,6 +541,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--spatial-stride", type=int, default=2)
     parser.add_argument("--time-stride", type=int, default=1)
     parser.add_argument("--log-every-blocks", type=int, default=5)
+    parser.add_argument("--save-era5-maps", action="store_true")
+    parser.add_argument("--map-split", choices=["train", "val", "test"], default="test")
+    parser.add_argument("--map-time-indices", type=str, default="")
+    parser.add_argument("--map-max-snapshots", type=int, default=3)
+    parser.add_argument("--map-output-dir", type=str, default="")
+    parser.add_argument("--map-point-size", type=float, default=18.0)
     return parser
 
 

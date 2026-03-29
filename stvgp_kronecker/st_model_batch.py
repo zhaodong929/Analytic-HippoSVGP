@@ -100,6 +100,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
         spatial_kernel_config: SpatialKernelConfig,
         z_s: torch.Tensor,
         noise_std: float = 0.1,
+        covariate_dim: int = 0,
         learn_spatial_inducing: bool = False,
         jitter: float = 1e-6,
     ) -> None:
@@ -112,6 +113,13 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
         else:
             self.register_buffer("z_s", z_s.clone())
         self.log_noise_std = nn.Parameter(torch.log(torch.as_tensor(noise_std, dtype=temporal_config.dtype)))
+        self.covariate_dim = int(covariate_dim)
+        if self.covariate_dim > 0:
+            self.covariate_linear = nn.Linear(self.covariate_dim, 1, bias=True, dtype=temporal_config.dtype)
+            nn.init.zeros_(self.covariate_linear.weight)
+            nn.init.zeros_(self.covariate_linear.bias)
+        else:
+            self.covariate_linear = None
         self.jitter = float(jitter)
         self.posterior_state: Optional[BatchPosteriorState] = None
 
@@ -137,6 +145,36 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
         raise ValueError(
             "Observations `y` must have shape [N_t, N_s] or flatten to N_t * N_s elements."
         )
+
+    def _as_covariates(
+        self,
+        covariates: Optional[torch.Tensor],
+        num_times: int,
+        num_space: int,
+    ) -> Optional[torch.Tensor]:
+        if self.covariate_linear is None:
+            return None
+        if covariates is None:
+            raise ValueError("Covariates are required because the model was built with covariate_dim > 0.")
+        tensor = torch.as_tensor(covariates, dtype=self.z_s.dtype, device=self.z_s.device)
+        if tensor.shape == (num_times, num_space, self.covariate_dim):
+            return tensor
+        if tensor.numel() == num_times * num_space * self.covariate_dim:
+            return tensor.reshape(num_times, num_space, self.covariate_dim)
+        raise ValueError(
+            "Covariates must have shape [N_t, N_s, C] or flatten to N_t * N_s * C elements."
+        )
+
+    def _covariate_mean(
+        self,
+        covariates: Optional[torch.Tensor],
+        num_times: int,
+        num_space: int,
+    ) -> torch.Tensor:
+        if self.covariate_linear is None:
+            return torch.zeros((num_times, num_space), dtype=self.z_s.dtype, device=self.z_s.device)
+        covariate_tensor = self._as_covariates(covariates, num_times=num_times, num_space=num_space)
+        return self.covariate_linear(covariate_tensor).squeeze(-1)
 
     def build_temporal_covariances(
         self,
@@ -177,6 +215,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
         times: torch.Tensor,
         x_s: torch.Tensor,
         y: torch.Tensor,
+        covariates: Optional[torch.Tensor] = None,
         horizon: Optional[TemporalBlockSpec] = None,
         spatial_covariances: Optional[SpatialCovariances] = None,
         cache_posterior: bool = False,
@@ -186,6 +225,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
             times=times,
             x_s=x_s,
             y=y,
+            covariates=covariates,
             horizon=horizon,
             spatial_covariances=spatial_covariances,
             cache_posterior=cache_posterior,
@@ -258,6 +298,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
         times: torch.Tensor,
         x_s: torch.Tensor,
         y: torch.Tensor,
+        covariates: Optional[torch.Tensor] = None,
         horizon: Optional[TemporalBlockSpec] = None,
         spatial_covariances: Optional[SpatialCovariances] = None,
         cache_posterior: bool = True,
@@ -267,6 +308,8 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
         times = self._as_times(times)
         x_s = self._as_spatial(x_s)
         y_grid = self._as_observations(y, num_times=times.shape[0], num_space=x_s.shape[0])
+        covariate_mean = self._covariate_mean(covariates, num_times=times.shape[0], num_space=x_s.shape[0])
+        residual_grid = y_grid - covariate_mean
 
         temporal_covariances = self.build_temporal_covariances(times, horizon=horizon)
         spatial_covariances = spatial_covariances or self.build_spatial_covariances(x_s)
@@ -281,14 +324,14 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
             temporal_covariances,
             spatial_covariances,
             projections,
-            y_grid,
+            residual_grid,
             materialize_cov=materialize_posterior_cov,
         )
         inducing_mean_matrix = mean_u.reshape(
             temporal_covariances.kuu_t.shape[0],
             spatial_covariances.kzz_s.shape[0],
         )
-        train_mean = projections.a_t @ inducing_mean_matrix @ projections.a_s.transpose(-1, -2)
+        train_mean = projections.a_t @ inducing_mean_matrix @ projections.a_s.transpose(-1, -2) + covariate_mean
 
         logdet_kuu = kron_logdet(
             temporal_covariances.kuu_t,
@@ -296,7 +339,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
             jitter=self.jitter,
         )
         loss = gaussian_nll(
-            flatten_grid(y_grid),
+            flatten_grid(residual_grid if self.covariate_linear is not None else y_grid),
             self.sigma2,
             logdet_kuu=logdet_kuu,
             logdet_precision=logdet_precision,
@@ -322,6 +365,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
             "rmse": rmse,
             "runtime_s": runtime_s,
             "train_mean": train_mean,
+            "covariate_mean": covariate_mean,
             "posterior_mean_u": mean_u,
             "posterior_cov_u": cov_u,
             "posterior_precision_cholesky_u": chol_precision_u,
@@ -343,6 +387,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
         overlap: int = 0,
         num_discrete_steps: Optional[int] = None,
         cache_last_posterior: bool = True,
+        covariates: Optional[torch.Tensor] = None,
     ) -> BlockwiseForwardSummary:
         """Run Stage 1.5 blockwise batch processing over temporal blocks.
 
@@ -354,6 +399,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
         times = self._as_times(times)
         x_s = self._as_spatial(x_s)
         y_grid = self._as_observations(y, num_times=times.shape[0], num_space=x_s.shape[0])
+        covariate_grid = self._as_covariates(covariates, num_times=times.shape[0], num_space=x_s.shape[0])
         spatial_covariances = self.build_spatial_covariances(x_s)
         block_specs = build_temporal_blocks(
             times,
@@ -368,6 +414,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
                 times=times[block_slice],
                 x_s=x_s,
                 y=y_grid[block_slice],
+                covariates=covariate_grid[block_slice] if covariate_grid is not None else None,
                 horizon=block_horizon,
                 spatial_covariances=spatial_covariances,
                 cache_posterior=cache_last_posterior and block_index == len(block_specs) - 1,
@@ -393,6 +440,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
         self,
         t_star: torch.Tensor,
         s_star: torch.Tensor,
+        covariates: Optional[torch.Tensor] = None,
         include_noise: bool = True,
     ) -> dict[str, torch.Tensor]:
         if self.posterior_state is None:
@@ -410,6 +458,7 @@ class BatchKroneckerSTHiPPOSVGP(nn.Module):
 
         inducing_mean_matrix = state.m.reshape(state.kuu_t.shape[0], state.kzz_s.shape[0])
         mean = a_t_star @ inducing_mean_matrix @ a_s_star.transpose(-1, -2)
+        mean = mean + self._covariate_mean(covariates, num_times=t_star.shape[0], num_space=s_star.shape[0])
 
         prior_diag = torch.outer(
             self.temporal_builder.compute_ktt_diag(t_star),
