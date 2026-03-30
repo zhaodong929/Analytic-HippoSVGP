@@ -209,6 +209,7 @@ def run_synthetic_online(args: argparse.Namespace) -> None:
     if pretrained_batch is not None:
         model.load_pretrained_batch_state(clone_state_dict(pretrained_batch))
         model.freeze_model_hyperparameters()
+        model.freeze_mean_function()
     model.initialize(reference_horizon=reference_horizon, x_s=spatial)
 
     block_specs = build_temporal_blocks(
@@ -347,6 +348,7 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
         if pretrained_batch is not None:
             model.load_pretrained_batch_state(clone_state_dict(pretrained_batch))
             model.freeze_model_hyperparameters()
+            model.freeze_mean_function()
         model.initialize(reference_horizon=reference_horizon, x_s=spatial)
 
         train_blocks = build_temporal_blocks(

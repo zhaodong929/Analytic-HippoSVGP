@@ -136,6 +136,14 @@ class OnlinePosteriorSummarySTGP(nn.Module):
         self.spatial_kernel.log_variance.requires_grad_(False)
         self.spatial_kernel.log_lengthscale.requires_grad_(False)
 
+    def freeze_mean_function(self) -> None:
+        """Freeze the offline-fitted mean function for fixed-mean online GP updates."""
+
+        if self.covariate_linear is None:
+            return
+        self.covariate_linear.weight.requires_grad_(False)
+        self.covariate_linear.bias.requires_grad_(False)
+
     def _as_times(self, times: torch.Tensor) -> torch.Tensor:
         return torch.as_tensor(times, dtype=self.z_s.dtype, device=self.z_s.device).reshape(-1)
 
