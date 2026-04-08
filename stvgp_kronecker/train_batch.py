@@ -245,6 +245,7 @@ def maybe_save_era5_maps(
     split_name: str,
     split_tensor: Any,
     pred_output: dict[str, torch.Tensor],
+    mean_only: torch.Tensor | None = None,
 ) -> None:
     """Optionally save ERA5 ground-truth / prediction / error maps."""
 
@@ -273,8 +274,24 @@ def maybe_save_era5_maps(
         snapshot_indices=snapshot_indices,
         point_size=args.map_point_size,
     )
-    if saved:
-        print(f"[maps] saved {len(saved)} {mode} {split_name} map(s) under {base_dir}")
+    mean_only_saved: list[Path] = []
+    if mean_only is not None:
+        mean_only_saved = save_era5_prediction_maps(
+            spatial_coords=split_tensor.spatial_coords,
+            times=split_tensor.times,
+            observations=split_tensor.observations,
+            predicted_mean=mean_only,
+            output_dir=base_dir,
+            filename_prefix=f"{mode}_{split_name}_mean_only",
+            variable_name=f"{variable_name} | mean only",
+            snapshot_indices=snapshot_indices,
+            point_size=args.map_point_size,
+        )
+    if saved or mean_only_saved:
+        print(
+            f"[maps] saved {len(saved)} {mode} {split_name} map(s) and "
+            f"{len(mean_only_saved)} mean-only map(s) under {base_dir}"
+        )
 
 
 def summarize_final_metrics(
@@ -928,6 +945,13 @@ def run_era5_probe(args: argparse.Namespace) -> None:
         split_name = args.map_split
         split_tensor = getattr(task, split_name)
         split_pred = {"train": train_pred, "val": val_pred, "test": test_pred}[split_name]
+        split_mean_only = None
+        if split_tensor.covariates is not None:
+            split_mean_only = model._covariate_mean(
+                split_tensor.covariates,
+                num_times=split_tensor.times.shape[0],
+                num_space=split_tensor.spatial_coords.shape[0],
+            )
         maybe_save_era5_maps(
             args=args,
             mode="batch",
@@ -936,6 +960,7 @@ def run_era5_probe(args: argparse.Namespace) -> None:
             split_name=split_name,
             split_tensor=split_tensor,
             pred_output=split_pred,
+            mean_only=split_mean_only,
         )
         return
 
