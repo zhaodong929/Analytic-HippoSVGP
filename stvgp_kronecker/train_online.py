@@ -122,6 +122,21 @@ def _build_online_model(
     return model.to(args.runtime_device)
 
 
+def _mean_only_diagnostics(
+    model: OnlinePosteriorSummarySTGP,
+    observations: torch.Tensor,
+    full_mean: torch.Tensor,
+    covariates: torch.Tensor | None,
+) -> dict[str, torch.Tensor]:
+    num_times, num_space = observations.shape
+    mean_only = model._covariate_mean(covariates, num_times=num_times, num_space=num_space)
+    return {
+        "mean_only_rmse": rmse(observations, mean_only),
+        "full_rmse": rmse(observations, full_mean),
+        "full_minus_mean_l2": torch.norm(full_mean - mean_only),
+    }
+
+
 def _maybe_pretrain_stage1(
     args: argparse.Namespace,
     train_times: torch.Tensor,
@@ -416,6 +431,24 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
                 format_model_hyperparameters(pretrained_batch or model),
             )
         )
+        train_compare = _mean_only_diagnostics(
+            model,
+            observations=task.train.observations,
+            full_mean=train_pred["mean"],
+            covariates=task.train.covariates,
+        )
+        val_compare = _mean_only_diagnostics(
+            model,
+            observations=task.val.observations,
+            full_mean=val_pred["mean"],
+            covariates=task.val.covariates,
+        )
+        test_compare = _mean_only_diagnostics(
+            model,
+            observations=task.test.observations,
+            full_mean=test_pred["mean"],
+            covariates=task.test.covariates,
+        )
         print(
             "[train-eval] rmse={:.4f} pred_nll={:.4f}".format(
                 rmse(task.train.observations, train_pred["mean"]).item(),
@@ -423,9 +456,23 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
             )
         )
         print(
+            "[train-compare] mean_only_rmse={:.4f} full_rmse={:.4f} full_minus_mean_l2={:.4f}".format(
+                train_compare["mean_only_rmse"].item(),
+                train_compare["full_rmse"].item(),
+                train_compare["full_minus_mean_l2"].item(),
+            )
+        )
+        print(
             "[val-eval] rmse={:.4f} pred_nll={:.4f}".format(
                 rmse(task.val.observations, val_pred["mean"]).item(),
                 predictive_nll(task.val.observations, val_pred["mean"], val_pred["obs_var"]).item(),
+            )
+        )
+        print(
+            "[val-compare] mean_only_rmse={:.4f} full_rmse={:.4f} full_minus_mean_l2={:.4f}".format(
+                val_compare["mean_only_rmse"].item(),
+                val_compare["full_rmse"].item(),
+                val_compare["full_minus_mean_l2"].item(),
             )
         )
         print(
@@ -437,9 +484,23 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
                 mean_block_time,
             )
         )
+        print(
+            "[test-compare] mean_only_rmse={:.4f} full_rmse={:.4f} full_minus_mean_l2={:.4f}".format(
+                test_compare["mean_only_rmse"].item(),
+                test_compare["full_rmse"].item(),
+                test_compare["full_minus_mean_l2"].item(),
+            )
+        )
         split_name = args.map_split
         split_tensor = getattr(task, split_name)
         split_pred = {"train": train_pred, "val": val_pred, "test": test_pred}[split_name]
+        split_mean_only = None
+        if split_tensor.covariates is not None:
+            split_mean_only = model._covariate_mean(
+                split_tensor.covariates,
+                num_times=split_tensor.times.shape[0],
+                num_space=split_tensor.spatial_coords.shape[0],
+            )
         maybe_save_era5_maps(
             args=args,
             mode="online",
@@ -448,6 +509,7 @@ def run_era5_online_probe(args: argparse.Namespace) -> None:
             split_name=split_name,
             split_tensor=split_tensor,
             pred_output=split_pred,
+            mean_only=split_mean_only,
         )
         return
 
