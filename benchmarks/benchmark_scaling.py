@@ -232,7 +232,11 @@ def build_model(
 ) -> torch.nn.Module:
     kernel = SE_kernel(1, device=device)
     likelihood = GaussianLikelihood(variance=math.exp(SOLAR_LOG_NOISE))
-    hippo = HiPPO_LegS(inducing_size, device)
+    # The HiPPO module precomputes transition buffers up to `max_length`.
+    # Runtime-vs-T sweeps can exceed the class default (2048), so allocate
+    # enough entries for the current benchmark configuration.
+    hippo_max_length = max(2048, int(num_discrete_steps) + 1)
+    hippo = HiPPO_LegS(inducing_size, device, max_length=hippo_max_length)
 
     kwargs = dict(
         kernel=kernel,
