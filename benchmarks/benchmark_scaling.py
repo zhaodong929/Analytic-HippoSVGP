@@ -28,7 +28,7 @@ from hipposvgp.hsvgp_analytic import HIPPOOSVGP as AnalyticHIPPOOSVGP
 from hipposvgp.kernel import SE_kernel
 from hipposvgp.likelihood import GaussianLikelihood
 
-DEFAULT_T_SWEEP = [100, 300, 1000, 3000, 10000]
+DEFAULT_T_SWEEP = [100, 300, 1000, 3000, 7000]
 DEFAULT_M_SWEEP = [8, 16, 32, 64, 128]
 DEFAULT_FIXED_M = 64
 DEFAULT_FIXED_T = 1000

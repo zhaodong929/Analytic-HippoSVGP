@@ -1,0 +1,27 @@
+{
+  "seed": 0,
+  "device": "cuda",
+  "dtype": "float64",
+  "warmup": 5,
+  "repeats": 20,
+  "t_values": [
+    100,
+    300,
+    1000,
+    3000,
+    7000
+  ],
+  "m_values": [
+    8,
+    16,
+    32,
+    64,
+    128
+  ],
+  "fixed_m_for_t": 64,
+  "fixed_t_for_m": 1000,
+  "num_observations": 256,
+  "rff_sample_size": 1000,
+  "optimizer_lr": 0.01,
+  "solar_data_note": "Observations are resampled deterministically from the repository's solar train/test arrays onto a uniform grid over the original solar time range. The runtime-vs-T sweep fixes the observation set and varies num_discrete_steps=T to isolate stream-length scaling."
+}

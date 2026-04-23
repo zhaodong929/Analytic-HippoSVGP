@@ -10,7 +10,7 @@ python benchmarks/benchmark_scaling.py \
   --mode all \
   --device cuda \
   --dtype float64 \
-  --t-values 100 300 1000 3000 10000 \
+  --t-values 100 300 1000 3000 7000 \
   --fixed-m-for-t 64 \
   --num-observations 256 \
   --rff-sample-size 1000 \
