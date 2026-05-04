@@ -1,0 +1,674 @@
+%%%%%%%% ICML 2026 PAPER DRAFT %%%%%%%%%%%%%%%%%
+
+\documentclass{article}
+
+% Recommended, but optional, packages for figures and better typesetting:
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+
+% hyperref makes hyperlinks in the resulting PDF.
+\usepackage{hyperref}
+
+% Attempt to make hyperref and algorithmic work together better:
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+
+% Use the following line for the initial blind version submitted for review:
+\usepackage{icml2026}
+
+% For preprint, use
+% \usepackage[preprint]{icml2026}
+
+% If accepted, instead use the following line for the camera-ready submission:
+% \usepackage[accepted]{icml2026}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, calc, shapes.geometric, decorations.pathmorphing, fit, backgrounds}
+
+% if you use cleveref..
+\usepackage[capitalize,noabbrev]{cleveref}
+\usepackage[section]{placeins}
+
+\makeatletter
+\renewcommand{\printAffiliationsAndNotice}[1]{\global\icml@noticeprintedtrue}
+\makeatother
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% THEOREMS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+% Todonotes is useful during development; simply uncomment the next line
+% and comment out the line below the next line to turn off comments
+% \usepackage[disable,textsize=tiny]{todonotes}
+\usepackage[textsize=tiny]{todonotes}
+
+\icmltitlerunning{Analytic interdomain memory for efficient online HiPPO-SVGP}
+
+\renewcommand{\topfraction}{0.95}
+\renewcommand{\dbltopfraction}{0.95}
+\renewcommand{\textfraction}{0.05}
+\renewcommand{\floatpagefraction}{0.7}
+\renewcommand{\dblfloatpagefraction}{0.7}
+
+\begin{document}
+
+\twocolumn[
+  \icmltitle{Analytic interdomain memory for efficient online HiPPO-SVGP}
+
+  \icmlkeywords{Gaussian Processes, Online Learning, Interdomain Gaussian Processes, HiPPO, Spherical Bessel Functions}
+
+  \vskip 0.3in
+]
+
+\printAffiliationsAndNotice{}
+
+\begin{abstract}
+Online Gaussian processes (GPs) are attractive for streaming prediction because they combine flexible function modeling with calibrated uncertainty, but exact inference is cubic and standard sparse online updates can forget early observations. Online HiPPO Sparse Variational Gaussian Processes (OHSVGP) addresses this issue by using HiPPO-based interdomain inducing variables, yet its interdomain kernel construction is built from temporal ODE recursion of Fourier--Legendre states. We study an analytic replacement for this kernel-construction step in the one-dimensional HiPPO-LegS setting with stationary kernels. The main idea is to express the required sine/cosine--Legendre overlap integrals in closed form through spherical Bessel functions, so that kernel quantities are evaluated directly at time $t$ and the remaining recurrence is over polynomial order rather than over timestamps. This changes the recursion structure of interdomain kernel construction, removes ODE discretization error from that construction, and reduces its asymptotic dependence on stream length. On Solar Irradiance and COVID-19 mortality streams, the resulting analytic variant maintains comparable predictive performance and is slightly favorable on several aggregate metrics relative to ODE-based OHSVGP. The present derivation is specific to one-dimensional HiPPO-LegS with stationary kernels, and runtime scaling on the solar benchmark confirms the predicted reduction in stream-length dependence, with the strongest gains at long horizons and small-to-moderate basis sizes.
+%Online Gaussian processes (GPs) are attractive for streaming time-series prediction because they provide flexible function modeling and calibrated uncertainty, yet they suffer from two persistent challenges: the cubic cost of exact inference and the tendency of sparse online methods to forget early observations as inducing locations drift toward recent data. Recent work on Online HiPPO Sparse Variational Gaussian Processes (OHSVGP) addresses the memory problem by interpreting HiPPO time-varying orthogonal projections as interdomain inducing variables, enabling long-range compression of historical information. However, the original OHSVGP constructs the relevant interdomain kernel quantities through recurrent ODE updates, which introduce discretization error, numerical sensitivity, and extra sequential computation. In this work, we propose an analytic extension of OHSVGP for one-dimensional online time series by replacing the ODE-based evaluation of Random Fourier Feature (RFF) projections with closed-form expressions derived from spherical Bessel functions. Using the spherical-Bessel trick, the sine/cosine--Legendre inner products required by the HiPPO-LegS interdomain construction are computed directly, yielding analytic feature maps for both $K_{fu}(t)$ and $K_{uu}(t)$. The resulting model preserves the memory mechanism of OHSVGP while removing the need for discretized kernel evolution. Empirical evaluation on Solar Irradiance and COVID-19 mortality time series demonstrates that the proposed analytic formulation maintains or improves predictive performance relative to ODE-based OHSVGP while reducing kernel-construction overhead and improving numerical robustness.
+\end{abstract}
+
+\section{Introduction}
+
+Gaussian processes (GPs) remain a standard probabilistic tool for time-series modeling since they combine nonparametric flexibility with principled uncertainty quantification \citep{Roberts2013}. Their deployment in online settings, however, is limited by the cubic complexity of exact inference and by the fact that sparse online approximations \citep{Titsias2009,Hensman2013,Bui2017,Maddox2021} often struggle with catastrophic forgetting.
+% when data arrive sequentially. Classical sparse variational GP methods reduce computational cost through inducing variables \citep{Titsias2009,Hensman2013}, and online sparse GP updates further avoid retraining from scratch \citep{Bui2017,Maddox2021}. Yet in streaming scenarios, standard inducing points tend to migrate toward newly arriving regions, which makes memory preservation difficult over long horizons.
+
+%The OHSVGP framework \citep{Chen2025} addresses this issue by constructing the inducing variables for Gaussian processes with high-order polynomial projection operators (HiPPO) \citep{Gu2020}. %Instead of storing information in moving inducing locations, OHSVGP defines time-dependent interdomain inducing variables using HiPPO orthogonal projections. This yields a GP approximation whose inducing representation expands with time and naturally summarizes the past.
+%The framework substantially alleviates catastrophic forgetting in online regression and continual-learning settings, while also enabling recurrent updates for the cross-covariance $K_{fu}(t)$ and the inducing covariance $K_{uu}(t)$.
+The Online HiPPO Sparse Variational Gaussian Process (OHSVGP) framework \citep{Chen2025} addresses this issue by constructing the inducing variables for GPs with high-order polynomial projection operators (HiPPO) \citep{Gu2020}, substantially alleviating catastrophic forgetting in online regression and continual-learning settings. By defining inducing features as HiPPO's time-varying orthogonal polynomials over $[0,t]$, a fixed set of inducing variables optimally compresses the entire observation history as the horizon grows.
+
+%Despite these benefits, the original implementation relies on ODE-based evolution of the interdomain features, which requires dicretization to integrate over time. Therefore, as time series become longer, integration becomes computationally expensive, or issues such as the accumulation of errors may arise.
+Despite these benefits, the original implementation relies on ODE-based evolution of the interdomain features, which requires discretization to integrate over time. Therefore, as time series become longer, integration becomes computationally expensive and discretization errors accumulate. We observe that for HiPPO-LegS in one dimension, the sine/cosine--Legendre inner products required by the interdomain construction admit closed forms via spherical Bessel functions, removing the need for ODE recursion altogether.
+%なので、時系列が長くなると積分にコストが掛かったり、あるいは誤差の蓄積とかが問題になったりする
+% For $K_{uu}(t)$, this is done through a Random Fourier Feature factorization and recurrent updates of Fourier-Legendre projections over time. While effective, this construction remains discretization-dependent and inherits numerical issues associated with iterative ODE evolution. For HiPPO-LegS in one-dimensional time series, the required sine/cosine--Legendre integrals can be computed in closed form using spherical Bessel functions, removing the need for ODE recursion.
+
+%This observation motivates the present work. We develop an analytic OHSVGP variant that replaces the ODE-based integration with direct closed-form computation.
+%Our central claim is that the memory mechanism of OHSVGP depends on the time-varying HiPPO interdomain basis rather than numerical recurrence.
+%Once the basis-function projections are evaluated analytically, the online variational learning objective can be retained while eliminating a substantial computational bottleneck.
+
+%Our contributions are threefold. First, we derive analytic interdomain feature maps for HiPPO-LegS by combining Bochner's theorem with the spherical-Bessel identity for plane waves and Legendre polynomials. Second, we show how these feature maps yield direct approximations to $K_{fu}(t)$ and $K_{uu}(t)$, thereby removing the discretized ODE solver. Third, we instantiate the method on Solar Irradiance and COVID-19 mortality time series, where the analytic construction is particularly well matched to the data geometry.
+Our contributions are threefold. First, we show that the sine/cosine--Legendre integrals underlying the OHSVGP interdomain kernels admit closed forms via spherical Bessel functions, yielding analytic expressions for $K_{fu}(t)$ and $K_{uu}(t)$ that replace the ODE solver entirely. Second, we demonstrate that the analytic construction avoids per-step ODE recursion, reducing kernel cost significantly when the stream length far exceeds the basis size, and eliminates the discretization error that accumulates over long horizons. Third, we validate on Solar Irradiance and COVID-19 mortality streams that the analytic variant matches or improves ODE-based OHSVGP in predictive accuracy.
+
+\section{Background}
+
+Here we review the necessary background on GPs and their sparse approximations, and interdomain GPs, then introduce the online HiPPO sparse GP framework which motivates our analytic extension.
+
+\subsection{Gaussian Processes, Sparse Variational Inference, and Online Updates}
+
+Let $f \sim \mathcal{GP}(0,k)$ be a Gaussian process with covariance kernel $k$ \citep{Rasmussen2006}. Given data $\{(x_i,y_i)\}_{i=1}^N$, exact GP inference scales cubically in $N$, motivating sparse variational approximations based on inducing variables $u$ \citep{Titsias2009,Hensman2013}. In the standard formulation, the variational posterior is defined as
+\begin{equation}
+q(f,u)=p(f \mid u)q(u),
+\end{equation}
+where $q(u)$ is usually Gaussian with free mean and covariance. For Gaussian likelihoods, collapsed objectives are available; for non-conjugate likelihoods, stochastic variational inference is typically used \citep{Hensman2015}.
+
+Interdomain GPs generalize inducing variables from point evaluations to integral transforms,
+\begin{equation}
+u_m = \int f(x)\phi_m(x)\,dx,
+\end{equation}
+where $\{\phi_m\}$ are basis functions chosen to induce desirable structure \citep{LazaroGredilla2009,VanderWilk2020}. The corresponding covariances are
+\begin{equation}
+[K_{fu}]_m = \int k(x,x')\phi_m(x')\,dx',
+\end{equation}
+\begin{equation}
+[K_{uu}]_{nm} = \iint k(x,x')\phi_n(x)\phi_m(x')\,dx\,dx'.
+\end{equation}
+
+In online learning, data arrive sequentially. Standard online sparse GP and online sparse variational GP methods update the posterior using only new data and the previous variational approximation \citep{Csato2002,Bui2017,Maddox2021}. While computationally attractive, this approach does not guarantee memory retention, as inducing locations remain optimized relative to recent observations.
+
+At update step $t$, such methods optimize a variational objective on the newly arrived batch while regularizing the new variational posterior toward the information carried forward from the previous step:
+\begin{equation}
+\mathcal{L}_t(q_t)
+=
+\mathbb{E}_{q_t(f)}\!\left[\log p(y_t \mid f)\right]
+-
+\mathrm{KL}\!\left[q_t(u)\,\|\,\widetilde{p}_{t-1}(u)\right],
+\end{equation}
+where $\widetilde{p}_{t-1}(u)$ denotes the predictive prior or transferred variational information from the previous update. In this paper, the online variational objective is unchanged from OHSVGP; the `one ELBO update step' runtime in Section~\ref{sec:runtime-scaling} refers to evaluating this objective, backpropagating through it, and taking one optimizer step.
+
+\subsection{HiPPO, Recurrent Memory, and OHSVGP}
+
+HiPPO constructs a finite-dimensional memory state by projecting historical signals onto time-varying orthogonal polynomial bases \citep{Gu2020}. For HiPPO-LegS, the basis functions are scaled Legendre polynomials over the interval $[0,t]$, producing coefficients that satisfy a linear ODE:
+\begin{equation}
+\frac{d}{dt}c(t) = A(t)c(t) + B(t)f(t),
+\end{equation}
+supporting streaming updates and long-range memory.
+
+Building on this memory construction, OHSVGP turns HiPPO coefficients into interdomain inducing variables \citep{Chen2025},
+\begin{equation}
+u_m(t)=\int f(x)\phi_m^{(t)}(x)\,dx,
+\end{equation}
+with time-dependent basis $\phi_m^{(t)}$. In the one-dimensional HiPPO-LegS case considered here, the basis functions on $[0,t]$ are
+\begin{equation}
+\phi_\ell^{(t)}(x) = \frac{2\ell+1}{t}P_\ell\!\left(\frac{2x}{t}-1\right)\mathbf{1}_{[0,t]}(x),
+\end{equation}
+which induce the interdomain quantities
+\begin{equation}
+[K_{fu}(t)]_{n\ell} = \int_0^t k(x_n,x)\phi_\ell^{(t)}(x)\,dx,
+\end{equation}
+\begin{equation}
+[K_{uu}(t)]_{\ell m} = \int_0^t\int_0^t k(x,x')\phi_\ell^{(t)}(x)\phi_m^{(t)}(x')\,dx\,dx'.
+\end{equation}
+In the original OHSVGP implementation, these kernel terms are built in Random Fourier Feature (RFF) space~\citep{Rahimi2007,Hensman2018} by evolving Fourier-Legendre coefficients recursively in $t$ with a HiPPO ODE, so that kernel construction is tied to a time-stepping procedure whose cost and discretization error both grow with stream length.
+
+\subsection{Spectral Factorization of the Interdomain Kernels}
+\label{sec:bochner}
+
+Starting from the HiPPO-LegS basis and interdomain kernels introduced above, we next recall the spectral factorization that underlies the analytic construction. We assume throughout that the kernel $k$ is stationary and admits a spectral density $p(\omega)$, so that Bochner's theorem gives \citep{Rudin1994,Rahimi2007}
+\begin{align}
+k(x,x') = \mathbb{E}_{\omega \sim p(\omega)}\bigl[&\cos(\omega x)\cos(\omega x') \notag \\
+&+ \sin(\omega x)\sin(\omega x')\bigr].
+\end{align}
+Drawing $R$ independent frequencies $\{\omega_r\}_{r=1}^{R} \sim p(\omega)$ replaces the expectation by an empirical average. Substituting this factorization into $K_{fu}(t)$ and $K_{uu}(t)$ and exchanging expectation with integration over $x$ shows that each sampled frequency $\omega$ contributes to the kernels only through a pair of one-dimensional projections of the HiPPO-LegS basis:
+\begin{equation}
+C_\ell(t;\omega)=\int_0^t \cos(\omega x)\,\phi_\ell^{(t)}(x)\,dx,
+\end{equation}
+\begin{equation}
+S_\ell(t;\omega)=\int_0^t \sin(\omega x)\,\phi_\ell^{(t)}(x)\,dx.
+\end{equation}
+Stacking the cosine and sine projections for all sampled frequencies gives the interdomain random-feature matrix $Z(t) \in \mathbb{R}^{M \times 2R}$ with entries $Z(t)_{\ell,r}=R^{-1/2}C_\ell(t;\omega_r)$ and $Z(t)_{\ell,R+r}=R^{-1/2}S_\ell(t;\omega_r)$. The corresponding data-side RFF matrix $Z_f(X) \in \mathbb{R}^{N \times 2R}$ has entries $Z_f(X)_{n,r}=R^{-1/2}\cos(\omega_r x_n)$ and $Z_f(X)_{n,R+r}=R^{-1/2}\sin(\omega_r x_n)$. The RFF approximation then assembles the interdomain covariance matrices as
+\begin{equation}
+K_{uu}(t) \approx Z(t)Z(t)^\top,
+\end{equation}
+\begin{equation}
+K_{fu}(t) \approx Z_f(X)Z(t)^\top.
+\end{equation}
+Thus, after the Bochner/RFF reduction, the computational bottleneck is not the matrix product itself but the construction of $Z(t)$, i.e., the evaluation of the $2MR$ sine/cosine--Legendre overlaps at the current horizon $t$. The original OHSVGP construction obtains these overlaps by evolving Fourier-feature inputs through the HiPPO-LegS ODE in time~\citep{Chen2025}, whereas our contribution is to compute the same overlaps directly in closed form.
+
+\section{Methods}
+
+We now turn to the new part of the construction. In the one-dimensional HiPPO-LegS setting with a stationary kernel, the overlap integrals identified in Section~\ref{sec:bochner} can be evaluated at a target time $t$ in closed form, without the temporal HiPPO ODE recursion that the baseline OHSVGP uses to construct them. The derivation uses the plane-wave/Legendre identity to express every entry of the RFF feature matrix $Z(t)$ underlying $K_{fu}(t)$ and $K_{uu}(t)$ in terms of spherical Bessel functions, after which the sequence $\{j_\ell\}$ is generated by a short recursion over polynomial order rather than over time.
+
+We therefore present the method in two steps. Section~\ref{sec:closed-form} derives the closed-form expression of each overlap via the plane-wave/Legendre identity. Section~\ref{sec:numerical} describes the polynomial-order recursion used to evaluate the resulting spherical Bessel sequence and summarizes the computational cost. Figure~\ref{fig:overview} contrasts the full construction with the baseline ODE-based assembly.
+
+\begin{figure*}[!t]
+  \centering
+  \input{figures/fig1_overview}
+  \caption{%
+    Two ways to assemble the HiPPO-LegS interdomain features $Z(t)$ in RFF space.
+    Both start from the Bochner sampling of $R$ frequencies
+    $\{\omega_r\} \sim p(\omega)$.
+    OHSVGP (left, blue) evaluates the sine/cosine--Legendre inner
+    products by feeding the Fourier feature waveforms through an
+    $M$-dimensional HiPPO-LegS ODE whose state is advanced at every
+    discretization step, so the recursion runs along time with
+    time complexity $\mathcal{O}(R M^2 T)$.
+    Our analytic construction (right, orange) instead runs a
+    backward Miller recursion along the basis order $\ell$
+    (starting from a seed at $\ell = L \gg M$ and descending to
+    $\ell = 0$), which returns all spherical Bessel values in
+    $\mathcal{O}(M)$ per frequency; the projections $C_\ell, S_\ell$
+    then follow in closed form.
+    The axis of recursion therefore switches from time $t$ to basis
+    order $\ell$, eliminating both the $T$ factor and the accumulated
+    discretization error.
+    Both constructions produce the same feature matrix
+    $Z(t) \in \mathbb{R}^{M \times 2R}$ and therefore share the same
+    space complexity $\mathcal{O}(M R)$; the difference is in time.%
+  }
+  \label{fig:overview}
+\end{figure*}
+
+\subsection{Closed-Form via Spherical Bessel Functions}
+\label{sec:closed-form}
+
+The key observation is that a change of variables to $u = 2x/t - 1$ turns $C_\ell$ and $S_\ell$ into the classical plane-wave/Legendre integral, which is known in closed form via spherical Bessel functions. The choice of $u$ matches the argument of the Legendre polynomial in $\phi_\ell^{(t)}$, which already has the form $P_\ell(2x/t - 1)$, and maps $[0,t]$ to the standard Legendre domain $[-1,1]$.
+
+We combine $C_\ell$ and $S_\ell$ into a single complex integral
+\begin{equation}
+C_\ell(t;\omega) + i\,S_\ell(t;\omega) = \int_0^t e^{i\omega x}\,\phi_\ell^{(t)}(x)\,dx,
+\end{equation}
+and introduce
+\begin{equation}
+u = \frac{2x}{t}-1,\qquad \kappa = \frac{\omega t}{2}.
+\end{equation}
+After substitution, the Legendre polynomial depends on $u$, and the exponential becomes a plane wave $e^{i\omega x} = e^{i\kappa(u+1)} = e^{i\kappa}\,e^{i\kappa u}$. Applying the classical plane-wave/Legendre identity~\citep{DLMF}
+\begin{equation}
+\int_{-1}^1 e^{i\kappa u}\,P_\ell(u)\,du = 2\,i^\ell\,j_\ell(\kappa),
+\end{equation}
+where $j_\ell$ is the spherical Bessel function of the first kind, closes the remaining integral. Factoring out $e^{i\kappa}$ and using $i^\ell = \cos(\ell\pi/2) + i\sin(\ell\pi/2)$, the real and imaginary parts give the closed-form overlaps
+\begin{equation}
+\label{eq:C-closed}
+C_\ell(t;\omega) = (2\ell+1)\,j_\ell(\kappa)\,\cos(\kappa+\ell\pi/2),
+\end{equation}
+\begin{equation}
+\label{eq:S-closed}
+S_\ell(t;\omega) = (2\ell+1)\,j_\ell(\kappa)\,\sin(\kappa+\ell\pi/2),
+\end{equation}
+with $\kappa = \omega t/2$.
+
+In these closed forms, $t$ enters only through the scalar $\kappa = \omega t/2$; the polynomial order $\ell$ enters through the Bessel index and the phase shift. Using the RFF assembly introduced in Section~\ref{sec:bochner}, these closed-form overlaps define the same interdomain feature matrix $Z(t)$ used by the ODE-based OHSVGP construction. The difference is therefore not the variational objective or the RFF kernel factorization, but the way $Z(t)$ is obtained: directly at the target horizon $t$, rather than by advancing a HiPPO-LegS ODE over all preceding discretization steps.
+
+\subsection{Numerical Evaluation and Complexity}
+\label{sec:numerical}
+
+The only remaining computational task is the evaluation of $\{j_\ell(\kappa)\}_{\ell=0}^{M-1}$ for each sampled frequency. The three-term recurrence
+\begin{equation}
+j_{\ell-1}(\kappa) = \frac{2\ell+1}{\kappa}\,j_\ell(\kappa) - j_{\ell+1}(\kappa)
+\end{equation}
+is numerically unstable when applied upward from $j_0, j_1$ once $\ell$ exceeds $\kappa$, because it amplifies the irregular Bessel solution. We therefore evaluate it by backward Miller recursion~\citep{Gautschi1967}: starting from a sufficiently large order $L \gg M$ with an arbitrary non-zero seed pair $(j_L, j_{L+1})$, we apply the recurrence downward to $\ell = 0$ and rescale the whole sequence so that $j_0(\kappa) = \sin(\kappa)/\kappa$ matches its known value. For small $\kappa$, Taylor expansions around the origin avoid division-by-zero in this normalization. The procedure is purely arithmetic and compatible with auto-differentiation, and it yields all $M$ orders in $\mathcal{O}(M)$ work per frequency.
+
+\begin{figure}[!b]
+\captionsetup{hypcap=false}
+\centering
+\includegraphics[width=0.92\columnwidth]{benchmarks/figures/convergence_check_covid.pdf}
+\caption{Convergence check for the ODE-based feature construction against the analytic evaluation. The horizontal axis is the ODE step size $\Delta t$, shown in increasing order. The relative feature error follows the $\mathcal{O}(\Delta t)$ reference trend.}
+\label{fig:convergence-check}
+\end{figure}
+
+Figure~\ref{fig:convergence-check} reports a representative convergence check for the time-stepped ODE construction against the analytic feature evaluation. We measure
+\begin{equation}
+\mathrm{RelErr}(\Delta t)
+=
+\frac{\|Z_{\mathrm{ODE},\Delta t}(t)-Z_{\mathrm{analytic}}(t)\|_F}
+{\|Z_{\mathrm{analytic}}(t)\|_F}.
+\end{equation}
+The relative feature error decreases as $\Delta t$ is refined and follows an approximately first-order trend over the tested range. This diagnostic is intended to verify the ODE feature discretization rather than to compare predictive performance on a particular dataset. It supports the interpretation that the analytic construction removes ODE time-stepping error from feature evaluation itself, while the remaining approximation error is due to the finite spectral representation rather than temporal discretization.
+
+For a stream of length $T$ with basis size $M$ and $R$ sampled frequencies, the ODE-based baseline performs an $\mathcal{O}(RM^2)$ update at each of the $T$ discretization steps, giving a total cost of $\mathcal{O}(RM^2 T)$. The analytic construction evaluates $K_{fu}(t)$ and $K_{uu}(t)$ directly at any target $t$ in $\mathcal{O}(RM^2)$, independent of the number of preceding steps.
+Section~\ref{sec:runtime-scaling} reports the corresponding wall-clock measurements. They confirm that the reduced dependence on stream length is visible in practice, while also showing that the analytic implementation has a basis-size crossover beyond which its arithmetic cost dominates.
+
+\FloatBarrier
+
+\section{Experiments}
+
+We evaluate the analytic construction against the ODE baseline on two streaming benchmarks: solar irradiance with a Gaussian likelihood and COVID-19 mortality with a Negative Binomial likelihood.
+
+\subsection{Solar Irradiance}
+
+We evaluate a matched analytic-versus-ODE ablation of the OHSVGP framework on 10 sequential solar irradiance tasks with a Gaussian likelihood. The two variants share the same data split, kernel family, initialization, inducing budget, and spectral budget. We report task-wise RMSE and predictive negative log-likelihood (NLL), and defer representative posterior plots to Appendix~\ref{app:solar-results}.
+
+Table~\ref{tab:solar-summary} summarizes the solar ablation over the 10-task stream. On this benchmark, the analytic construction reduces mean RMSE from $0.145$ to $0.142$ and mean NLL from $4.035$ to $2.482$. The analytic model achieves lower RMSE on 7/10 tasks and lower NLL on 9/10 tasks, with the largest gain on Task~2 and a clear regression on Task~8.
+
+Figure~\ref{fig:solar-metrics-summary} visualizes the stream-level metric trends, while Appendix~\ref{app:solar-results} gives representative posterior comparisons. Tasks~1 and~10 illustrate that the analytic variant remains competitive in both early and late stages of the stream, while Task~2 highlights the largest improvement in both RMSE and NLL. We also include Task~8 as a failure case, where the ODE variant outperforms the analytic approximation.
+
+
+\begin{center}
+\begin{minipage}{\columnwidth}
+\captionsetup{hypcap=false}
+\captionof{table}{Solar irradiance comparison across 10 sequential tasks. Lower is better. Full task-wise values are given in Appendix~\ref{app:solar-results}.}
+\label{tab:solar-summary}
+\centering
+\begin{scriptsize}
+  \resizebox{\columnwidth}{!}{%
+  \begin{tabular}{lcccc}
+      \toprule
+      Method   & RMSE $\downarrow$       & NLL $\downarrow$        & RMSE wins $\uparrow$ & NLL wins $\uparrow$ \\
+      \midrule
+      ODE      & $0.145 \pm 0.025$     & $4.035 \pm 2.637$     & 3/10                 & 1/10                \\
+      Analytic & $\mathbf{0.142 \pm 0.024}$ & $\mathbf{2.482 \pm 2.307}$ & \textbf{7/10}        & \textbf{9/10}       \\
+      \bottomrule
+    \end{tabular}%
+  }
+\end{scriptsize}
+\end{minipage}
+\end{center}
+\begin{figure}[!t]
+\captionsetup{hypcap=false}
+\centering
+\includegraphics[width=0.92\columnwidth]{figures/solar/solar_metrics_summary.pdf}
+\caption{Task-wise RMSE and NLL across the 10-task solar stream.}
+\label{fig:solar-metrics-summary}
+\end{figure}
+
+\subsection{COVID-19 Mortality}
+
+We next evaluate the same matched analytic-versus-ODE comparison on 5 sequential COVID-19 mortality tasks with a Negative Binomial likelihood. Here we summarize all 15 seen-task evaluation pairs induced by the 5-task stream. Our primary metrics are negative log predictive density (NLPD) and expected calibration error (ECE), while RMSE and $R^2$ are reported as secondary diagnostics in Appendix~\ref{app:covid-results}.
+
+\begin{center}
+\begin{minipage}{\columnwidth}
+\captionsetup{hypcap=false}
+\captionof{table}{COVID-19 mortality comparison across all 15 seen-task evaluation pairs. Lower is better. Full task-wise values are given in Appendix~\ref{app:covid-results}.}
+\label{tab:covid-summary}
+\centering
+\begin{scriptsize}
+  \resizebox{\columnwidth}{!}{%
+  \begin{tabular}{lcccc}
+      \toprule
+      Method   & NLPD $\downarrow$       & ECE $\downarrow$        & NLPD wins $\uparrow$ & ECE wins $\uparrow$ \\
+      \midrule
+      ODE      & $3.548 \pm 0.410$     & $0.109 \pm 0.041$     & 4/15                 & 8/15                \\
+      Analytic & $\mathbf{3.539 \pm 0.430}$ & $\mathbf{0.109 \pm 0.038}$ & \textbf{11/15}       & 7/15                \\
+      \bottomrule
+    \end{tabular}%
+  }
+\end{scriptsize}
+\end{minipage}
+\end{center}
+
+Table~\ref{tab:covid-summary} reports the COVID comparison. Averaged over all 15 seen-task evaluation pairs, the analytic variant yields slightly lower mean NLPD ($3.539$ vs.\ $3.548$) and essentially matching mean ECE (both $\approx\!0.109$). It achieves lower NLPD on 11/15 pairs and lower ECE on 7/15 pairs, indicating modest aggregate gains in probabilistic accuracy. The final stage after Task~5 is more mixed: the analytic model still attains slightly lower mean NLPD ($3.714$ vs.\ $3.719$) and slightly higher mean $R^2$ ($0.701$ vs.\ $0.699$), but its mean ECE worsens from $0.101$ to $0.114$ because of a clear regression on the final held-out Task~5 evaluation. Overall, these results suggest that the analytic construction maintains predictive behavior comparable to ODE-based OHSVGP on this continual setting.
+
+These aggregate results are not uniform across the stream. The analytic variant remains close to the ODE baseline in RMSE and $R^2$ on most evaluation pairs, and its probabilistic gains are concentrated in a subset of mid-stream evaluations rather than being distributed evenly. The clearest counterexample is the final Eval~5 after Task~5 pair, where calibration degrades enough to offset some of the earlier ECE improvements. This pattern is consistent with a method that largely preserves the baseline predictive behavior while modestly improving probabilistic accuracy on many, but not all, evaluation pairs.
+
+\subsection{Efficiency and Scaling Evaluation}
+\label{sec:runtime-scaling}
+
+We next test whether the change in recursion structure yields practical runtime gains on the solar benchmark while preserving predictive accuracy. Both methods use the same kernel family, spectral budget ($R=1000$), dtype, device, and random seed. All timing experiments were run on a single NVIDIA GeForce RTX 4090 in double precision. We report wall-clock time for interdomain kernel construction as medians over 20 repeats after 5 warmup iterations, and we report test RMSE after fitting the variational parameters under fixed kernel hyperparameters. Appendix~\ref{app:runtime-results} reports the corresponding summary tables.
+
+The quantity previously denoted by $T$ requires clarification. In these benchmarks, $T$ is \emph{not} the number of solar observations. The solar dataset contains only a few hundred samples, whereas the sweep uses $T \in \{100,300,1000,3000,7000\}$ as the number of HiPPO/ODE discretization steps over a fixed time interval. The more faithful horizontal axis is therefore the integration step size
+\[
+\Delta t = \frac{t_{\max} - t_{\min}}{T},
+\]
+so increasing $T$ corresponds to a finer temporal discretization rather than to a longer dataset. We therefore plot the runtime and RMSE curves against $\Delta t$, with the corresponding $T$ values shown in parentheses on the tick labels.
+
+Figure~\ref{fig:runtime-vs-t} isolates the kernel-construction cost against $\Delta t$ and compares the resulting test RMSE on the same sweep. The left panel is the direct runtime test of the theoretical claim in Section~\ref{sec:numerical}: as $\Delta t$ decreases, the ODE baseline must traverse more temporal steps, whereas the analytic construction avoids that temporal recursion and therefore removes the dominant linear dependence on the discretization count. The right panel checks the predictive side of the same ablation by showing how the test RMSE behaves as the discretization is refined.
+\begin{figure}[!t]
+\captionsetup{hypcap=false}
+\centering
+\begin{subfigure}[t]{0.48\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{benchmarks/figures/runtime_vs_delta_t_kernel.pdf}
+  \caption{Kernel construction}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.48\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{benchmarks/figures/rmse_vs_delta_t.pdf}
+  \caption{Test RMSE}
+\end{subfigure}
+\caption{Kernel runtime and predictive RMSE versus integration step size $\Delta t$ at fixed $M=64$ on the solar benchmark. Here $\Delta t = (t_{\max}-t_{\min})/T$, so the $T$ values shown in parentheses on the x-axis are discretization counts rather than dataset size. Runtime lines show medians over 20 repeats after 5 warmup iterations; shaded bands denote one standard deviation.}
+\label{fig:runtime-vs-t}
+\end{figure}
+
+Figure~\ref{fig:runtime-vs-m} performs the complementary sweep over basis size at fixed discretization. The left panel again isolates kernel-construction time, while the right panel reports test RMSE at each $M$. This is the regime in which the analytic construction pays for its spherical-Bessel and polynomial-order recurrence directly: both methods still scale upward with $M$, but the constant factors are different, so the practical runtime crossover need not align with the accuracy crossover. To complement the wall-clock measurements, we additionally profile each kernel-construction and full-update call with PyTorch's \texttt{with\_flops=True} profiler and report the resulting \emph{profiler-estimated} FLOP counts in Appendix~\ref{app:runtime-results}. These FLOP estimates are not hardware peak throughput numbers; they are operator-level profiler totals used to support the qualitative scaling discussion.
+
+\begin{figure}[!t]
+\captionsetup{hypcap=false}
+\centering
+\begin{subfigure}[t]{0.48\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{benchmarks/figures/runtime_vs_M_kernel.pdf}
+  \caption{Kernel construction}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.48\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{benchmarks/figures/rmse_vs_M.pdf}
+  \caption{Test RMSE}
+\end{subfigure}
+\caption{Kernel runtime and predictive RMSE versus basis size $M$ at fixed discretization on the solar benchmark. Runtime lines show medians over 20 repeats after 5 warmup iterations; shaded bands denote one standard deviation.}
+\label{fig:runtime-vs-m}
+\end{figure}
+
+\FloatBarrier
+
+\section{Conclusion and Future Work}
+
+We presented an analytic replacement for ODE-based interdomain kernel construction in one-dimensional HiPPO-LegS OHSVGP. The central change is a shift from temporal ODE recursion to direct kernel evaluation together with recursion over polynomial order, implemented through spherical Bessel identities. Within this restricted setting, the resulting construction removes ODE discretization error from interdomain kernel construction and reduces its asymptotic dependence on stream length, while maintaining or slightly improving predictive performance on the evaluated benchmarks. The runtime study confirms that the expected reduction in stream-length dependence appears in practice, while also revealing a basis-size crossover beyond which the analytic implementation loses its timing advantage. Important next steps are to study alternative basis functions and spectral approximations, to broaden the runtime evaluation across hardware and spectral budgets, and to determine whether analogous analytic constructions are possible in higher-dimensional settings.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\clearpage
+\appendix
+\onecolumn
+
+\section{Additional Solar Results}
+\label{app:solar-results}
+
+\begin{center}
+\begin{minipage}{0.95\linewidth}
+  \captionsetup{hypcap=false}
+  \captionof{table}{Task-wise solar irradiance comparison between the ODE-based and analytic variants. Negative deltas indicate an improvement of the analytic method over the ODE baseline.}
+  \label{tab:solar-taskwise}
+  \centering
+  \begin{small}
+    \begin{tabular}{ccccccc}
+      \toprule
+      Task & ODE RMSE & Analytic RMSE & $\Delta$ RMSE & ODE NLL & Analytic NLL & $\Delta$ NLL \\
+      \midrule
+      1  & 0.1992 & 0.1802 & -0.0190 & 8.0143 & 5.4882 & -2.5261 \\
+      2  & 0.1346 & 0.1146 & -0.0201 & 4.5787 & 1.4713 & -3.1074 \\
+      3  & 0.1060 & 0.0911 & -0.0149 & 1.9400 & 0.1451 & -1.7949 \\
+      4  & 0.1643 & 0.1621 & -0.0021 & 7.8561 & 6.4982 & -1.3578 \\
+      5  & 0.1534 & 0.1509 & -0.0025 & 6.5244 & 5.4849 & -1.0395 \\
+      6  & 0.1412 & 0.1457 &  0.0045 & 5.3541 & 2.5755 & -2.7786 \\
+      7  & 0.1298 & 0.1449 &  0.0152 & 1.3365 & 0.8754 & -0.4611 \\
+      8  & 0.1173 & 0.1467 &  0.0294 & 0.8595 & 1.5299 &  0.6704 \\
+      9  & 0.1429 & 0.1296 & -0.0133 & 1.5256 & 0.0976 & -1.4281 \\
+      10 & 0.1598 & 0.1521 & -0.0077 & 2.3635 & 0.6493 & -1.7143 \\
+      \midrule
+      Mean & 0.1448 & 0.1418 & -0.0030 & 4.0353 & 2.4815 & -1.5537 \\
+      \bottomrule
+    \end{tabular}
+  \end{small}
+\end{minipage}
+\end{center}
+
+\clearpage
+
+\begin{center}
+  \captionsetup{hypcap=false}
+  \centering
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/solar/task2_ode.pdf}
+
+    \smallskip
+    \emph{(a) Task 2, ODE}
+  \end{minipage}
+  \hfill
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/solar/task2_analytic.pdf}
+
+    \smallskip
+    \emph{(b) Task 2, Analytic}
+  \end{minipage}
+
+  \vspace{0.35em}
+
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/solar/task8_ode.pdf}
+
+    \smallskip
+    \emph{(c) Task 8, ODE}
+  \end{minipage}
+  \hfill
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/solar/task8_analytic.pdf}
+
+    \smallskip
+    \emph{(d) Task 8, Analytic}
+  \end{minipage}
+  \captionof{figure}{Representative solar posterior comparisons. Task~2 shows the strongest improvement of the analytic construction in both RMSE and NLL, while Task~8 provides the main counterexample where the ODE construction performs better.}
+  \label{fig:solar-best-worst}
+\end{center}
+
+\begin{center}
+  \captionsetup{hypcap=false}
+  \centering
+  \vspace{0.5em}
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/solar/task1_ode.pdf}
+
+    \smallskip
+    \emph{(a) Task 1, ODE}
+  \end{minipage}
+  \hfill
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/solar/task1_analytic.pdf}
+
+    \smallskip
+    \emph{(b) Task 1, Analytic}
+  \end{minipage}
+
+  \vspace{0.35em}
+
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/solar/task10_ode.pdf}
+
+    \smallskip
+    \emph{(c) Task 10, ODE}
+  \end{minipage}
+  \hfill
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/solar/task10_analytic.pdf}
+
+    \smallskip
+    \emph{(d) Task 10, Analytic}
+  \end{minipage}
+  \captionof{figure}{Early- and late-stream posterior comparisons on solar irradiance. The analytic construction remains competitive at the beginning of the stream and retains an advantage in the later stage, consistent with the improved aggregate NLL.}
+  \label{fig:solar-early-late}
+\end{center}
+
+\clearpage
+\section{Additional COVID Results}
+\label{app:covid-results}
+
+\begin{center}
+\begin{minipage}{0.98\linewidth}
+  \captionsetup{hypcap=false}
+  \captionof{table}{Task-wise COVID-19 mortality comparison between the ODE-based and analytic variants. Negative deltas indicate an improvement of the analytic method over the ODE baseline.}
+  \label{tab:covid-taskwise}
+  \centering
+  \begin{small}
+    \resizebox{0.98\linewidth}{!}{%
+    \begin{tabular}{cccccccc}
+      \toprule
+      Eval & After & ODE NLPD & Analytic NLPD & $\Delta$ NLPD & ODE ECE & Analytic ECE & $\Delta$ ECE \\
+      \midrule
+      1 & 1 & 2.9599 & 2.9636 &  0.0037 & 0.1500 & 0.1463 & -0.0037 \\
+      1 & 2 & 2.9783 & 2.9489 & -0.0294 & 0.1278 & 0.1278 &  0.0000 \\
+      2 & 2 & 3.7922 & 3.7910 & -0.0011 & 0.0800 & 0.0717 & -0.0083 \\
+      1 & 3 & 2.9806 & 2.9527 & -0.0279 & 0.1352 & 0.1352 &  0.0000 \\
+      2 & 3 & 3.6662 & 3.6625 & -0.0037 & 0.0767 & 0.0767 &  0.0000 \\
+      3 & 3 & 3.8487 & 3.8628 &  0.0141 & 0.1183 & 0.1117 & -0.0067 \\
+      1 & 4 & 3.0697 & 2.9829 & -0.0869 & 0.1907 & 0.1426 & -0.0481 \\
+      2 & 4 & 3.6496 & 3.6491 & -0.0006 & 0.0767 & 0.0867 &  0.0100 \\
+      3 & 4 & 3.8816 & 3.8965 &  0.0149 & 0.1283 & 0.1200 & -0.0083 \\
+      4 & 4 & 3.8058 & 3.8005 & -0.0053 & 0.0517 & 0.0433 & -0.0083 \\
+      1 & 5 & 3.0870 & 3.0674 & -0.0195 & 0.1537 & 0.1426 & -0.0111 \\
+      2 & 5 & 3.6310 & 3.6207 & -0.0102 & 0.0867 & 0.1183 &  0.0317 \\
+      3 & 5 & 3.8031 & 3.7754 & -0.0277 & 0.0750 & 0.0767 &  0.0017 \\
+      4 & 5 & 3.9312 & 3.9027 & -0.0285 & 0.0533 & 0.0583 &  0.0050 \\
+      5 & 5 & 4.1404 & 4.2054 &  0.0650 & 0.1375 & 0.1750 &  0.0375 \\
+      \midrule
+      \multicolumn{2}{c}{Overall mean} & 3.5484 & 3.5388 & -0.0095 & 0.1094 & 0.1089 & -0.0006 \\
+      \multicolumn{2}{c}{Final mean}   & 3.7185 & 3.7143 & -0.0042 & 0.1012 & 0.1142 &  0.0129 \\
+      \bottomrule
+    \end{tabular}%
+    }
+  \end{small}
+\end{minipage}
+\end{center}
+
+\begin{center}
+  \captionsetup{hypcap=false}
+  \centering
+  \includegraphics[width=0.82\linewidth]{figures/covid/ode_analytic_comparison/covid_metrics_summary.png}
+  \captionof{figure}{Task-pair comparison across the COVID-19 stream. The analytic construction closely tracks the ODE baseline in RMSE and $R^2$, improves NLPD on most evaluation pairs, and yields its clearest calibration gain around Task~4, while the final Eval~5 after Task~5 pair remains the main counterexample.}
+  \label{fig:covid-metrics-summary}
+\end{center}
+
+\begin{center}
+  \captionsetup{hypcap=false}
+  \centering
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/covid/ode_analytic_comparison/ode_covid_tasks/covid_task4.png}
+
+    \smallskip
+    \emph{(a) Task 4, ODE}
+  \end{minipage}
+  \hfill
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/covid/ode_analytic_comparison/analytic_global_start_covid_tasks/covid_task4.png}
+
+    \smallskip
+    \emph{(b) Task 4, Analytic}
+  \end{minipage}
+
+  \vspace{0.35em}
+
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/covid/ode_analytic_comparison/ode_covid_tasks/covid_task5.png}
+
+    \smallskip
+    \emph{(c) Task 5, ODE}
+  \end{minipage}
+  \hfill
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/covid/ode_analytic_comparison/analytic_global_start_covid_tasks/covid_task5.png}
+
+    \smallskip
+    \emph{(d) Task 5, Analytic}
+  \end{minipage}
+  \captionof{figure}{Representative COVID-19 posterior comparisons in a two-column layout. Task~4 illustrates a case where the analytic construction slightly improves predictive density while largely preserving the posterior shape of the ODE baseline, whereas Task~5 shows the main final-stage counterexample where the analytic variant underperforms.}
+  \label{fig:covid-posterior-comparisons}
+\end{center}
+
+\clearpage
+\section{Additional Runtime Results}
+\label{app:runtime-results}
+
+\begin{center}
+\begin{minipage}{0.98\linewidth}
+  \captionsetup{hypcap=false}
+\captionof{table}{Solar kernel/runtime summary for the discretization sweep at fixed $M=64$ and $R=1000$. Here $T$ is the number of HiPPO/ODE integration steps and $\Delta t = (t_{\max}-t_{\min})/T$. Times are median wall-clock milliseconds over 20 repeats after 5 warmup iterations.}
+  \label{tab:runtime-vs-t}
+  \centering
+  \begin{small}
+    \resizebox{0.98\linewidth}{!}{%
+    \begin{tabular}{ccccc}
+      \toprule
+      $T$ & Analytic kernel & ODE kernel & Analytic full update & ODE full update \\
+      \midrule
+      100  & 126.8 & 5.0   & 115.9 & 10.3 \\
+      300  & 132.5 & 12.6  & 130.2 & 17.3 \\
+      1000 & 106.1 & 61.6  & 128.7 & 80.3 \\
+      3000 & 89.4  & 123.2 & 96.0  & 132.7 \\
+      7000 & 85.9  & 281.1 & 92.6  & 298.0 \\
+      \bottomrule
+    \end{tabular}%
+    }
+  \end{small}
+\end{minipage}
+\end{center}
+
+\begin{center}
+\begin{minipage}{0.98\linewidth}
+  \captionsetup{hypcap=false}
+\captionof{table}{Solar kernel/runtime summary for the basis-size sweep at fixed discretization $T=1000$ and $R=1000$. Times are median wall-clock milliseconds over 20 repeats after 5 warmup iterations.}
+  \label{tab:runtime-vs-m}
+  \centering
+  \begin{small}
+    \resizebox{0.98\linewidth}{!}{%
+    \begin{tabular}{ccccc}
+      \toprule
+      $M$ & Analytic kernel & ODE kernel & Analytic full update & ODE full update \\
+      \midrule
+      8   & 5.2   & 40.2 & 10.7  & 42.8 \\
+      16  & 13.7  & 56.9 & 25.0  & 65.4 \\
+      32  & 51.4  & 51.6 & 56.0  & 47.4 \\
+      64  & 102.8 & 61.7 & 117.8 & 83.9 \\
+      128 & 173.5 & 78.1 & 180.2 & 84.2 \\
+      \bottomrule
+    \end{tabular}%
+    }
+  \end{small}
+\end{minipage}
+\end{center}
+
+\end{document}
