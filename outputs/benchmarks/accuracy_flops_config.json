@@ -1,0 +1,29 @@
+{
+  "seed": 0,
+  "device": "cuda",
+  "dtype": "float64",
+  "t_values": [
+    100,
+    300,
+    1000,
+    3000,
+    7000
+  ],
+  "m_values": [
+    8,
+    16,
+    32,
+    64,
+    128
+  ],
+  "fixed_m_for_t": 64,
+  "fixed_t_for_m": 1000,
+  "rff_sample_size": 1000,
+  "flops_rff_sample_size": 1000,
+  "runtime_num_observations": 256,
+  "train_iters": 300,
+  "optimizer_lr": 0.01,
+  "profile_cuda_activities": false,
+  "delta_t_note": "For the T sweep, T denotes the number of HiPPO/ODE discretization steps over a fixed solar time span; the plotted quantity is delta_t = (t_end - t_start) / T, not the number of solar observations.",
+  "flops_note": "estimated_flops comes from torch.profiler(with_flops=True) on a single forward or forward-backward-step call. These are profiler estimates rather than hardware peak FLOPS."
+}
