@@ -12,6 +12,7 @@ python benchmarks/benchmark_accuracy_flops.py \
   --t-values 100 300 1000 3000 7000 \
   --fixed-m-for-t 64 \
   --rff-sample-size 1000 \
+  --flops-rff-sample-size 512 \
   --train-iters 300 \
   --optimizer-lr 1e-2 \
   --output-root outputs/benchmarks \

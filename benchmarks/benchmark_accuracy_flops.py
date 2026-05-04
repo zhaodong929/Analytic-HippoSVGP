@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import math
 import sys
@@ -97,10 +98,21 @@ def parse_args() -> argparse.Namespace:
         help="Number of random Fourier features R shared by all runs.",
     )
     parser.add_argument(
+        "--flops-rff-sample-size",
+        type=int,
+        default=None,
+        help="Optional profiler-only RFF count. Defaults to --rff-sample-size.",
+    )
+    parser.add_argument(
         "--runtime-num-observations",
         type=int,
         default=256,
         help="Number of observations used for FLOP profiling, matching the runtime benchmark.",
+    )
+    parser.add_argument(
+        "--profile-cuda-activities",
+        action="store_true",
+        help="Include CUDA activities in torch.profiler. Off by default to reduce profiler memory overhead.",
     )
     parser.add_argument(
         "--train-iters",
@@ -143,6 +155,16 @@ def load_solar_train_test(
 
 def delta_t_from_steps(start: float, end: float, num_discrete_steps: int) -> float:
     return float(end - start) / float(num_discrete_steps)
+
+
+def release_memory(device: torch.device, *objs) -> None:
+    for obj in objs:
+        if obj is not None:
+            del obj
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
 
 
 def train_variational_posterior(
@@ -191,26 +213,33 @@ def evaluate_rmse_nll(
     return float(rmse.item()), float(nll.item())
 
 
-def profile_flops(device: torch.device, fn) -> float:
+def profile_flops(device: torch.device, fn, include_cuda_activities: bool) -> float:
     if profile is None or ProfilerActivity is None or record_function is None:
         return float("nan")
 
     activities = [ProfilerActivity.CPU]
-    if device.type == "cuda":
+    if device.type == "cuda" and include_cuda_activities:
         activities.append(ProfilerActivity.CUDA)
 
     sync_device(device)
-    with profile(
-        activities=activities,
-        with_flops=True,
-        profile_memory=False,
-        record_shapes=False,
-    ) as prof:
-        with record_function("benchmark_profile"):
-            out = fn()
-            if torch.is_tensor(out):
-                _ = out.detach()
-            sync_device(device)
+    try:
+        with profile(
+            activities=activities,
+            with_flops=True,
+            profile_memory=False,
+            record_shapes=False,
+        ) as prof:
+            with record_function("benchmark_profile"):
+                out = fn()
+                if torch.is_tensor(out):
+                    _ = out.detach()
+                sync_device(device)
+    except torch.cuda.OutOfMemoryError as exc:
+        release_memory(device)
+        raise RuntimeError(
+            "FLOP profiling ran out of memory. Retry with a smaller profiler-only "
+            "`--flops-rff-sample-size` such as 512. Keep `--profile-cuda-activities` off unless you specifically need it."
+        ) from exc
 
     total_flops = 0.0
     for evt in prof.key_averages():
@@ -237,9 +266,11 @@ def benchmark_accuracy_and_flops(
     fixed_m_for_t: int,
     fixed_t_for_m: int,
     rff_sample_size: int,
+    flops_rff_sample_size: int,
     seed: int,
     train_iters: int,
     optimizer_lr: float,
+    profile_cuda_activities: bool,
 ) -> tuple[List[Dict[str, object]], List[Dict[str, object]]]:
     accuracy_rows: List[Dict[str, object]] = []
     flops_rows: List[Dict[str, object]] = []
@@ -305,6 +336,15 @@ def benchmark_accuracy_and_flops(
                     "nll": float(nll),
                 }
             )
+            release_memory(device, acc_model)
+
+            w_flops = sample_fixed_w(
+                num_rff=flops_rff_sample_size,
+                log_ls=SOLAR_LOG_LS,
+                seed=seed,
+                device=device,
+                dtype=dtype,
+            )
 
             kernel_model = build_model(
                 method=method,
@@ -314,12 +354,14 @@ def benchmark_accuracy_and_flops(
                 end=runtime_end,
                 device=device,
                 dtype=dtype,
-                rff_sample_size=rff_sample_size,
+                rff_sample_size=flops_rff_sample_size,
             )
             kernel_flops = profile_flops(
                 device,
-                lambda: run_kernel_only(kernel_model, runtime_x, w),
+                lambda: run_kernel_only(kernel_model, runtime_x, w_flops),
+                include_cuda_activities=profile_cuda_activities,
             )
+            release_memory(device, kernel_model)
 
             update_model = build_model(
                 method=method,
@@ -329,12 +371,14 @@ def benchmark_accuracy_and_flops(
                 end=runtime_end,
                 device=device,
                 dtype=dtype,
-                rff_sample_size=rff_sample_size,
+                rff_sample_size=flops_rff_sample_size,
             )
             full_update_flops = profile_flops(
                 device,
-                lambda: run_full_update(update_model, runtime_x, runtime_y, w, optimizer_lr),
+                lambda: run_full_update(update_model, runtime_x, runtime_y, w_flops, optimizer_lr),
+                include_cuda_activities=profile_cuda_activities,
             )
+            release_memory(device, update_model, w, w_flops)
 
             flops_rows.extend(
                 [
@@ -347,7 +391,7 @@ def benchmark_accuracy_and_flops(
                         "num_discrete_steps": int(num_discrete_steps),
                         "delta_t": float(delta_t),
                         "num_observations": int(runtime_x.shape[0]),
-                        "rff_sample_size": int(rff_sample_size),
+                        "rff_sample_size": int(flops_rff_sample_size),
                         "estimated_flops": float(kernel_flops),
                     },
                     {
@@ -359,7 +403,7 @@ def benchmark_accuracy_and_flops(
                         "num_discrete_steps": int(num_discrete_steps),
                         "delta_t": float(delta_t),
                         "num_observations": int(runtime_x.shape[0]),
-                        "rff_sample_size": int(rff_sample_size),
+                        "rff_sample_size": int(flops_rff_sample_size),
                         "estimated_flops": float(full_update_flops),
                     },
                 ]
@@ -406,6 +450,7 @@ def main() -> None:
     experiments = ["T", "M"] if args.experiment == "all" else [args.experiment]
     all_accuracy_rows: List[Dict[str, object]] = []
     all_flops_rows: List[Dict[str, object]] = []
+    flops_rff_sample_size = args.flops_rff_sample_size or args.rff_sample_size
 
     config_payload = {
         "seed": args.seed,
@@ -416,9 +461,11 @@ def main() -> None:
         "fixed_m_for_t": args.fixed_m_for_t,
         "fixed_t_for_m": args.fixed_t_for_m,
         "rff_sample_size": args.rff_sample_size,
+        "flops_rff_sample_size": flops_rff_sample_size,
         "runtime_num_observations": args.runtime_num_observations,
         "train_iters": args.train_iters,
         "optimizer_lr": args.optimizer_lr,
+        "profile_cuda_activities": bool(args.profile_cuda_activities),
         "delta_t_note": (
             "For the T sweep, T denotes the number of HiPPO/ODE discretization steps over a fixed solar time span; "
             "the plotted quantity is delta_t = (t_end - t_start) / T, not the number of solar observations."
@@ -451,9 +498,11 @@ def main() -> None:
             fixed_m_for_t=args.fixed_m_for_t,
             fixed_t_for_m=args.fixed_t_for_m,
             rff_sample_size=args.rff_sample_size,
+            flops_rff_sample_size=flops_rff_sample_size,
             seed=args.seed,
             train_iters=args.train_iters,
             optimizer_lr=args.optimizer_lr,
+            profile_cuda_activities=bool(args.profile_cuda_activities),
         )
         all_accuracy_rows.extend(accuracy_rows)
         all_flops_rows.extend(flops_rows)
