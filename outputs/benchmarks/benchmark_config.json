@@ -23,5 +23,8 @@
   "num_observations": 256,
   "rff_sample_size": 1000,
   "optimizer_lr": 0.01,
+  "analytic_runtime_impl": "pure_torch_miller_recurrence",
+  "analytic_compile": false,
+  "analytic_compile_mode": "reduce-overhead",
   "solar_data_note": "Observations are resampled deterministically from the repository's solar train/test arrays onto a uniform grid over the original solar time range. The runtime-vs-T sweep fixes the observation set and varies num_discrete_steps=T to isolate stream-length scaling."
 }

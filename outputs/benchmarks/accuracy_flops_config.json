@@ -26,7 +26,8 @@
   "split_replace": 1,
   "spectral_sample_device": "cpu",
   "profile_cuda_activities": false,
+  "analytic_runtime_impl": "pure_torch_miller_recurrence",
   "delta_t_note": "For the T sweep, delta_t is derived from the full solar time span divided by an equivalent global step count. Per-task num_discrete_steps is then computed inside the original 10-task solar scripts using that step_size.",
   "accuracy_note": "RMSE/NLL are produced by the repository's existing scripts/onedim/solar/test_hsgp_online_fixedkernel.py and scripts/onedim/solar/test_ohsgp_analytic_solar.py evaluation logic, aggregated over the 10 solar tasks.",
-  "flops_note": "estimated_flops comes from torch.profiler(with_flops=True) on a single forward or forward-backward-step call. These are profiler estimates rather than hardware peak FLOPS."
+  "flops_note": "estimated_flops comes from torch.profiler(with_flops=True) on a single forward or forward-backward-step call. These are profiler estimates rather than hardware peak FLOPS. The analytic runtime/FLOP path uses the pure-torch Miller recurrence implementation rather than the older scipy-based spherical-Bessel path."
 }
