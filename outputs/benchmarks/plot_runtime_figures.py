@@ -88,10 +88,20 @@ def load_accuracy_summary(path: Path):
     with path.open("r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            if "rmse_mean" in row:
+                rmse_mean = float(row["rmse_mean"])
+                rmse_std = float(row.get("rmse_std", 0.0) or 0.0)
+                nll_mean = float(row.get("nll_mean", row.get("nll", 0.0)) or 0.0)
+            else:
+                # Backward compatibility for older summary CSVs that stored a
+                # single RMSE/NLL value instead of mean/std aggregates.
+                rmse_mean = float(row["rmse"])
+                rmse_std = 0.0
+                nll_mean = float(row.get("nll", 0.0) or 0.0)
             rows[row["method"]][int(row["sweep_value"])] = {
-                "rmse_mean": float(row["rmse_mean"]),
-                "rmse_std": float(row["rmse_std"]),
-                "nll_mean": float(row["nll_mean"]),
+                "rmse_mean": rmse_mean,
+                "rmse_std": rmse_std,
+                "nll_mean": nll_mean,
                 "delta_t": float(row["delta_t"]),
             }
     return rows
