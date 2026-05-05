@@ -341,6 +341,23 @@ def task_rmse_nll(model, x_t: np.ndarray, y_t: np.ndarray, threshold: float, dev
     return float(rmse.item()), float(nll.item())
 
 
+def estimate_total_discrete_steps(x_list: Sequence[torch.Tensor], step_size: float) -> int:
+    """Match the solar script's per-task rounding to size HiPPO buffers safely."""
+    start = torch.min(x_list[0]).item()
+    end = torch.max(x_list[0]).item()
+    total_steps = int(math.ceil((end - start) / step_size))
+    end = start + total_steps * step_size
+
+    for i in range(1, len(x_list)):
+        start = end
+        end = torch.max(x_list[i]).item()
+        num_steps = int(math.ceil((end - start) / step_size))
+        total_steps += num_steps
+        end = start + num_steps * step_size
+
+    return total_steps
+
+
 def run_ode_sequence(
     *,
     args_ns: argparse.Namespace,
@@ -359,7 +376,8 @@ def run_ode_sequence(
     y_list = split_data["y_list"]
 
     log_ls, log_sf, log_noise, _ = resolve_fixed_hypers(args_ns, x, y, device)
-    hippo = HiPPO_LegS(inducing_size, device)
+    hippo_total_steps = estimate_total_discrete_steps(x_list, step_size)
+    hippo = HiPPO_LegS(inducing_size, device, max_length=max(2048, hippo_total_steps + 1))
     prev_discrete_steps = 0.0
     rows: List[Dict[str, object]] = []
 
@@ -503,7 +521,8 @@ def run_analytic_sequence(
     y_list = split_data["y_list"]
 
     log_ls, log_sf, log_noise, _ = resolve_fixed_hypers(args_ns, x, y, device)
-    hippo = HiPPO_LegS(inducing_size, device)
+    hippo_total_steps = estimate_total_discrete_steps(x_list, step_size)
+    hippo = HiPPO_LegS(inducing_size, device, max_length=max(2048, hippo_total_steps + 1))
     prev_discrete_steps = 0.0
     rows: List[Dict[str, object]] = []
     phase_origin = torch.min(x_list[0]).item() if args_ns.phase_origin_mode == "global_start" else 0.0
