@@ -6,6 +6,100 @@ import torch.nn as nn
 import numpy.random as npr
 import math
 import numpy as np
+from functools import lru_cache
+
+
+def _miller_rescale(f_nm1, f_n, f_np1, large_thr, small_thr):
+    scale = torch.maximum(torch.maximum(f_nm1.abs(), f_n.abs()), f_np1.abs())
+    scale = torch.where(
+        scale > large_thr,
+        scale,
+        torch.where(scale < small_thr, torch.full_like(scale, small_thr), torch.ones_like(scale)),
+    )
+    return f_nm1 / scale, f_n / scale, f_np1 / scale, torch.log(scale)
+
+
+def _miller_recurrence_python(x_safe, lmax, n_start):
+    out_shape = (lmax + 1,) + tuple(x_safe.shape)
+    f = torch.zeros(out_shape, device=x_safe.device, dtype=x_safe.dtype)
+    log_s = torch.zeros(out_shape, device=x_safe.device, dtype=x_safe.dtype)
+
+    f_np1 = torch.zeros_like(x_safe)
+    f_n = torch.ones_like(x_safe)
+    cur_log_s = torch.zeros_like(x_safe)
+
+    if x_safe.dtype == torch.float64:
+        large_thr = 1e100
+        small_thr = 1e-100
+    else:
+        large_thr = 1e15
+        small_thr = 1e-15
+
+    for n in range(n_start, 0, -1):
+        f_nm1 = ((2 * n + 1) / x_safe) * f_n - f_np1
+        f_nm1, f_n, f_np1, log_scale = _miller_rescale(
+            f_nm1, f_n, f_np1, large_thr=large_thr, small_thr=small_thr
+        )
+        cur_log_s = cur_log_s + log_scale
+
+        if n - 1 <= lmax:
+            f[n - 1] = f_nm1
+            log_s[n - 1] = cur_log_s
+        f_np1 = f_n
+        f_n = f_nm1
+    return f, log_s
+
+
+@lru_cache(maxsize=128)
+def _get_compiled_miller_python(lmax, n_start, compile_mode):
+    def compiled_impl(x_safe):
+        return _miller_recurrence_python(x_safe, lmax=lmax, n_start=n_start)
+
+    return torch.compile(compiled_impl, mode=compile_mode)
+
+
+def _run_miller_recurrence(x_safe, lmax, n_start, enable_compile=False, compile_mode="default"):
+    if enable_compile and hasattr(torch, "compile"):
+        try:
+            return _get_compiled_miller_python(lmax, n_start, compile_mode)(x_safe)
+        except Exception:
+            pass
+    return _miller_recurrence_python(x_safe, lmax=lmax, n_start=n_start)
+
+
+def _spherical_bessel_j_pure_torch(lmax, x, enable_compile=False, compile_mode="default"):
+    eps = 1e-8
+    x_abs = x.abs()
+    mask_nonzero = x_abs > eps
+    x_safe = torch.where(mask_nonzero, x_abs, torch.full_like(x_abs, eps))
+
+    max_x = float(x_abs.max().detach().cpu())
+    n_start = int(lmax + max_x + 50)
+
+    f, log_s = _run_miller_recurrence(
+        x_safe,
+        lmax=lmax,
+        n_start=n_start,
+        enable_compile=enable_compile,
+        compile_mode=compile_mode,
+    )
+
+    true_j0 = torch.sin(x_safe) / x_safe
+    scale0 = true_j0 / (f[0] + 1e-300)
+    corr = torch.exp(torch.clamp(log_s - log_s[0].unsqueeze(0), min=-700.0, max=700.0))
+    j = f * corr * scale0.unsqueeze(0)
+
+    parity = torch.where(
+        (torch.arange(lmax + 1, device=x.device) % 2) == 0,
+        torch.ones(lmax + 1, device=x.device, dtype=x.dtype),
+        -torch.ones(lmax + 1, device=x.device, dtype=x.dtype),
+    ).view(-1, *([1] * x.ndim))
+    sign_is_pos = (x >= 0).unsqueeze(0)
+    j = torch.where(sign_is_pos, j, j * parity)
+
+    j_at_0 = torch.zeros_like(j)
+    j_at_0[0] = 1.0
+    return torch.where(mask_nonzero.unsqueeze(0), j, j_at_0)
 
 class HIPPOOSVGP(nn.Module):
     def __init__(
@@ -39,6 +133,8 @@ class HIPPOOSVGP(nn.Module):
         self.use_analytic_Z = use_analytic_Z 
         self.phase_origin_mode = kwargs.get("phase_origin_mode", "zero")
         self.phase_origin = float(kwargs.get("phase_origin", 0.0))
+        self.analytic_compile = bool(kwargs.get("analytic_compile", False))
+        self.analytic_compile_mode = kwargs.get("analytic_compile_mode", "default")
 
         # Kernel selection
         self.kernel = kernel
@@ -152,71 +248,8 @@ class HIPPOOSVGP(nn.Module):
 
     @staticmethod
     def spherical_bessel_j(lmax, x):
-        """Compute spherical Bessel functions j_0...j_lmax for scalar or tensor x."""
-        import scipy.special
-        
-        # --- Scipy wrapper with custom backward pass for gradients ---
-        class BesselJFunction(torch.autograd.Function):
-            @staticmethod
-            def forward(ctx, nu, inp):
-                ctx.save_for_backward(nu, inp)
-                
-                # Move to CPU/NumPy for Scipy execution
-                nu_np = nu.detach().cpu().numpy()
-                inp_np = inp.detach().cpu().numpy()
-                
-                res = scipy.special.jv(nu_np, inp_np)
-                
-                # Convert back to Tensor on original device
-                return torch.from_numpy(res).to(device=inp.device, dtype=inp.dtype)
-
-            @staticmethod
-            def backward(ctx, grad_output):
-                nu, inp = ctx.saved_tensors
-                
-                nu_np = nu.detach().cpu().numpy()
-                inp_np = inp.detach().cpu().numpy()
-                
-                # Derivative formula: dJ_v/dx = 0.5 * (J_{v-1} - J_{v+1})
-                j_minus = scipy.special.jv(nu_np - 1, inp_np)
-                j_plus = scipy.special.jv(nu_np + 1, inp_np)
-                grad_inp_np = 0.5 * (j_minus - j_plus)
-                
-                grad_inp = torch.from_numpy(grad_inp_np).to(device=inp.device, dtype=inp.dtype)
-                
-                # Return gradients (None for 'nu', calculated grad for 'inp')
-                return None, grad_inp * grad_output
-
-        # ----------------------------------------
-        
-        # 1. Handle x=0 to avoid division by zero
-        mask_nonzero = (x.abs() > 1e-8)
-        x_safe = torch.where(mask_nonzero, x, torch.ones_like(x)) 
-
-        # 2. Prepare Order nu = n + 0.5
-        L = torch.arange(lmax + 1, device=x.device, dtype=x.dtype).view(-1, 1, 1)
-        nu = L + 0.5
-
-        # 3. Calculate prefactor sqrt(pi / 2|x|)
-        x_abs = x_safe.abs()
-        prefactor = torch.sqrt(math.pi / (2 * x_abs))
-        
-        # 4. Compute J_nu(|x|) using the custom Scipy wrapper
-        bessel_val = BesselJFunction.apply(nu, x_abs)
-        
-        # Combine terms; for negative x use parity j_l(-x)=(-1)^l j_l(x)
-        parity = torch.where((L % 2) == 0, 1.0, -1.0)
-        x_nonneg = (x_safe >= 0).unsqueeze(0)
-        sign_factor = torch.where(x_nonneg, torch.ones_like(x_abs).unsqueeze(0), parity)
-        j = prefactor * bessel_val * sign_factor
-
-        # 5. Correct boundary condition at x=0: j_0(0)=1, j_n(0)=0
-        j_at_0 = torch.zeros((lmax+1,) + x.shape, device=x.device, dtype=x.dtype)
-        j_at_0[0] = 1.0
-        
-        j = torch.where(mask_nonzero, j, j_at_0)
-        
-        return j
+        """Compute spherical Bessel functions j_0...j_lmax via pure-torch Miller recurrence."""
+        return _spherical_bessel_j_pure_torch(lmax, x)
     
     # @staticmethod
     # def spherical_bessel_j(lmax, x):
@@ -415,7 +448,12 @@ class HIPPOOSVGP(nn.Module):
         L = torch.arange(self.inducing_size, dtype=self.dtype, device=self.device)
 
         # 2. Compute Bessel
-        j = self.spherical_bessel_j(self.inducing_size-1, kappa)
+        j = _spherical_bessel_j_pure_torch(
+            self.inducing_size - 1,
+            kappa,
+            enable_compile=bool(getattr(self, "analytic_compile", False)),
+            compile_mode=str(getattr(self, "analytic_compile_mode", "default")),
+        )
         if len(j.shape) == 3: j = j.squeeze(1) # [M, R]
 
         # 3. Prefactor sqrt(2l+1)

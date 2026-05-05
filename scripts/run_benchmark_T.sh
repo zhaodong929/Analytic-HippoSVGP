@@ -16,6 +16,8 @@ python benchmarks/benchmark_scaling.py \
   --rff-sample-size 1000 \
   --warmup 5 \
   --repeats 20 \
+  --analytic-compile 0 \
+  --analytic-compile-mode reduce-overhead \
   --output-root outputs/benchmarks \
   --figure-dir outputs/benchmarks/figures \
   "$@"

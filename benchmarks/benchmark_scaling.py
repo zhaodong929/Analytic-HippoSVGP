@@ -143,6 +143,19 @@ def parse_args() -> argparse.Namespace:
         help="Learning rate for the single full_update optimizer step.",
     )
     parser.add_argument(
+        "--analytic-compile",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help="Enable torch.compile for the pure-torch analytic Miller recurrence.",
+    )
+    parser.add_argument(
+        "--analytic-compile-mode",
+        default="reduce-overhead",
+        choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+        help="torch.compile mode for the analytic Miller recurrence when --analytic-compile=1.",
+    )
+    parser.add_argument(
         "--output-root",
         default="outputs/benchmarks",
         help="Root directory for CSV outputs and figures.",
@@ -229,6 +242,8 @@ def build_model(
     device: torch.device,
     dtype: torch.dtype,
     rff_sample_size: int,
+    analytic_compile: bool = False,
+    analytic_compile_mode: str = "reduce-overhead",
 ) -> torch.nn.Module:
     kernel = SE_kernel(1, device=device)
     likelihood = GaussianLikelihood(variance=math.exp(SOLAR_LOG_NOISE))
@@ -255,6 +270,8 @@ def build_model(
     if method == "analytic":
         kwargs["use_analytic_Z"] = True
         kwargs["phase_origin_mode"] = "zero"
+        kwargs["analytic_compile"] = bool(analytic_compile)
+        kwargs["analytic_compile_mode"] = analytic_compile_mode
 
     model = METHOD_SPECS[method]["class"](**kwargs).to(device=device)
     model = model.to(dtype=dtype)
@@ -322,6 +339,8 @@ def benchmark_configuration(
     warmup: int,
     repeats: int,
     optimizer_lr: float,
+    analytic_compile: bool,
+    analytic_compile_mode: str,
 ) -> tuple[List[float], float]:
     w = sample_fixed_w(
         num_rff=rff_sample_size,
@@ -345,6 +364,8 @@ def benchmark_configuration(
             device=device,
             dtype=dtype,
             rff_sample_size=rff_sample_size,
+            analytic_compile=analytic_compile,
+            analytic_compile_mode=analytic_compile_mode,
         )
         model.train(mode == "full_update")
 
@@ -500,6 +521,8 @@ def run_experiment(
     warmup: int,
     repeats: int,
     optimizer_lr: float,
+    analytic_compile: bool,
+    analytic_compile_mode: str,
 ) -> List[Dict[str, object]]:
     x, y, start, end = resample_solar_observations(
         base_stream=base_stream,
@@ -537,6 +560,8 @@ def run_experiment(
                     warmup=warmup,
                     repeats=repeats,
                     optimizer_lr=optimizer_lr,
+                    analytic_compile=analytic_compile,
+                    analytic_compile_mode=analytic_compile_mode,
                 )
                 for repeat_idx, elapsed_ms in enumerate(timings_ms):
                     raw_rows.append(
@@ -592,6 +617,9 @@ def main() -> None:
         "num_observations": args.num_observations,
         "rff_sample_size": args.rff_sample_size,
         "optimizer_lr": args.optimizer_lr,
+        "analytic_runtime_impl": "pure_torch_miller_recurrence",
+        "analytic_compile": bool(args.analytic_compile),
+        "analytic_compile_mode": args.analytic_compile_mode,
         "solar_data_note": (
             "Observations are resampled deterministically from the repository's solar train/test arrays "
             "onto a uniform grid over the original solar time range. The runtime-vs-T sweep fixes the "
@@ -619,6 +647,8 @@ def main() -> None:
             warmup=args.warmup,
             repeats=args.repeats,
             optimizer_lr=args.optimizer_lr,
+            analytic_compile=bool(args.analytic_compile),
+            analytic_compile_mode=args.analytic_compile_mode,
         )
         all_raw_rows.extend(raw_rows)
 

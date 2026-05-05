@@ -15,5 +15,7 @@ python benchmarks/benchmark_accuracy_flops.py \
   --rff-sample-size-qb 5000 \
   --flops-rff-sample-size 512 \
   --optimizer-lr 1e-2 \
+  --analytic-compile 0 \
+  --analytic-compile-mode reduce-overhead \
   --output-root outputs/benchmarks \
   "$@"

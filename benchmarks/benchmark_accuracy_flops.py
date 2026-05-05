@@ -795,6 +795,8 @@ def benchmark_accuracy_and_flops(
                 device=device,
                 dtype=dtype,
                 rff_sample_size=flops_rff_sample_size,
+                analytic_compile=bool(args.analytic_compile),
+                analytic_compile_mode=args.analytic_compile_mode,
             )
             kernel_flops = profile_flops(
                 device,
@@ -812,6 +814,8 @@ def benchmark_accuracy_and_flops(
                 device=device,
                 dtype=dtype,
                 rff_sample_size=flops_rff_sample_size,
+                analytic_compile=bool(args.analytic_compile),
+                analytic_compile_mode=args.analytic_compile_mode,
             )
             full_update_flops = profile_flops(
                 device,
@@ -904,6 +908,7 @@ def main() -> None:
         "split_replace": args.split_replace,
         "spectral_sample_device": args.spectral_sample_device,
         "profile_cuda_activities": bool(args.profile_cuda_activities),
+        "analytic_runtime_impl": "pure_torch_miller_recurrence",
         "delta_t_note": (
             "For the T sweep, delta_t is derived from the full solar time span divided by an equivalent global step count. "
             "Per-task num_discrete_steps is then computed inside the original 10-task solar scripts using that step_size."
@@ -914,7 +919,8 @@ def main() -> None:
         ),
         "flops_note": (
             "estimated_flops comes from torch.profiler(with_flops=True) on a single forward or forward-backward-step call. "
-            "These are profiler estimates rather than hardware peak FLOPS."
+            "These are profiler estimates rather than hardware peak FLOPS. The analytic runtime/FLOP path uses the pure-torch "
+            "Miller recurrence implementation rather than the older scipy-based spherical-Bessel path."
         ),
     }
     with (output_root / "accuracy_flops_config.json").open("w", encoding="utf-8") as handle:
