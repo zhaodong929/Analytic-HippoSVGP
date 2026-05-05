@@ -19,7 +19,7 @@
     128
   ],
   "fixed_m_for_t": 64,
-  "fixed_t_for_m": 1000,
+  "fixed_t_for_m": 159,
   "num_observations": 256,
   "rff_sample_size": 1000,
   "optimizer_lr": 0.01,
