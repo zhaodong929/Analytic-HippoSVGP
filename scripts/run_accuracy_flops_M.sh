@@ -10,10 +10,10 @@ python benchmarks/benchmark_accuracy_flops.py \
   --device cuda \
   --dtype float64 \
   --m-values 8 16 32 64 128 \
-  --fixed-t-for-m 1000 \
+  --fixed-t-for-m 159 \
   --rff-sample-size 1000 \
+  --rff-sample-size-qb 5000 \
   --flops-rff-sample-size 512 \
-  --train-iters 300 \
   --optimizer-lr 1e-2 \
   --output-root outputs/benchmarks \
   "$@"

@@ -89,8 +89,9 @@ def load_accuracy_summary(path: Path):
         reader = csv.DictReader(f)
         for row in reader:
             rows[row["method"]][int(row["sweep_value"])] = {
-                "rmse": float(row["rmse"]),
-                "nll": float(row["nll"]),
+                "rmse_mean": float(row["rmse_mean"]),
+                "rmse_std": float(row["rmse_std"]),
+                "nll_mean": float(row["nll_mean"]),
                 "delta_t": float(row["delta_t"]),
             }
     return rows
@@ -185,8 +186,9 @@ def plot_rmse_vs_delta_t(t_values, delta_t_values, accuracy_summary):
     style_axes(ax, ylabel="Test RMSE")
 
     for method in ("ode", "analytic"):
-        y = np.asarray([accuracy_summary[method][value]["rmse"] for value in t_values], dtype=float)
-        add_series(ax, x, y, method, std=None)
+        y = np.asarray([accuracy_summary[method][value]["rmse_mean"] for value in t_values], dtype=float)
+        std = np.asarray([accuracy_summary[method][value]["rmse_std"] for value in t_values], dtype=float)
+        add_series(ax, x, y, method, std=std)
 
     ax.set_xticks(x, get_delta_t_tick_labels(t_values, delta_t_values))
     ax.set_xlabel(r"Integration step size $\Delta t$ ($T$ in parentheses)", fontsize=8.8)
@@ -225,8 +227,9 @@ def plot_rmse_vs_m(m_values, accuracy_summary):
     style_axes(ax, ylabel="Test RMSE")
 
     for method in ("ode", "analytic"):
-        y = np.asarray([accuracy_summary[method][value]["rmse"] for value in m_values], dtype=float)
-        add_series(ax, x, y, method, std=None)
+        y = np.asarray([accuracy_summary[method][value]["rmse_mean"] for value in m_values], dtype=float)
+        std = np.asarray([accuracy_summary[method][value]["rmse_std"] for value in m_values], dtype=float)
+        add_series(ax, x, y, method, std=std)
 
     ax.set_xticks(x, [str(v) for v in m_values])
     ax.set_xlabel(r"Basis size $M$", fontsize=8.8)
