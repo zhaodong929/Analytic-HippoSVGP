@@ -17,7 +17,7 @@
     128
   ],
   "fixed_m_for_t": 64,
-  "fixed_t_for_m": 1000,
+  "fixed_t_for_m": 3000,
   "rff_sample_size": 1000,
   "rff_sample_size_qb": 5000,
   "flops_rff_sample_size": 512,
