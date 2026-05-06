@@ -11,7 +11,7 @@ python benchmarks/benchmark_scaling.py \
   --device cuda \
   --dtype float64 \
   --m-values 8 16 32 64 128 \
-  --fixed-t-for-m 159 \
+  --fixed-t-for-m 3000 \
   --num-observations 256 \
   --rff-sample-size 1000 \
   --warmup 5 \
